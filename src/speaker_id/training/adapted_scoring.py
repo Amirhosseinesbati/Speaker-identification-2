@@ -1,7 +1,7 @@
 """Paired public/adapted scoring with immutable fold caches and held-out queries.
 
 This module never fits an encoder or extracts audio. Adapted caches cannot use
-group crossfit: their original inner calibration roles must remain untouched.
+all-training-query crossfit: their original calibration query set is immutable.
 """
 from __future__ import annotations
 
@@ -80,8 +80,16 @@ def assert_fixed_role_groups(contract: dict, outer: int) -> dict:
             "group_counts": {key: len(value) for key, value in groups.items()}}
 
 
+def validate_paired_suite(suite: dict) -> None:
+    if suite.get("experiment_code") == "S005":
+        from speaker_id.training.expanded_gallery import validate_expanded_suite
+        validate_expanded_suite(suite)
+    else:
+        validate_adapted_suite(suite)
+
+
 def load_adapted_contracts(root: Path, suite: dict, *, verify_audio: bool = False) -> dict:
-    validate_adapted_suite(suite)
+    validate_paired_suite(suite)
     contracts = {}
     for name, source in suite["sources"].items():
         path = project_path(root, source["config"], "configs/train")
@@ -89,6 +97,8 @@ def load_adapted_contracts(root: Path, suite: dict, *, verify_audio: bool = Fals
         project_path(root, source["run"], "artifacts/training", exists=False)
     for path in suite["sources"]["adapted"]["export_manifest_paths"]:
         project_path(root, path, "artifacts", exists=False)
+    if suite["experiment_code"] == "S005":
+        project_path(root, suite["control"]["run"], "artifacts/training", exists=False)
     public, adapted = contracts["public"], contracts["adapted"]
     if public["config"]["mode"] != "frozen_baseline" or adapted["config"]["mode"] != "fine_tune":
         raise ValueError("Expected the completed public B002 and adapted F003 modes")
@@ -222,15 +232,16 @@ def execute_adapted_suite(root: Path, config_path: Path, suite: dict, contracts:
     from speaker_id.infrastructure.readiness import validate_readiness_for_execution
     from speaker_id.tracking import DurableMLflowRun, ExperimentBinding
     from speaker_id.training.plots import evaluation_plots
-    validate_adapted_suite(suite)
+    validate_paired_suite(suite)
+    code = suite["experiment_code"]
     contract = contracts["public"]
     validate_readiness_for_execution(root, contract)
     if (os.environ.get("VAST_INSTANCE_ID") != "50079023" or not torch.cuda.is_available()
             or "3090" not in torch.cuda.get_device_name(0)):
-        raise RuntimeError("S004 execution requires the authorized RTX 3090 instance")
+        raise RuntimeError(f"{code} execution requires the authorized RTX 3090 instance")
     torch.set_num_threads(contract["config"]["cpu_threads"])
     binding = ExperimentBinding(**json.loads(binding_path.read_text(encoding="utf-8"))["binding"])
-    output = root / "artifacts/training" / ("S004_" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "_" + uuid.uuid4().hex[:8])
+    output = root / "artifacts/training" / (code + "_" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "_" + uuid.uuid4().hex[:8])
     output.mkdir(parents=True, exist_ok=False)
     inputs = {"suite_config": config_path}
     for name, source in suite["sources"].items():
@@ -269,14 +280,20 @@ def execute_adapted_suite(root: Path, config_path: Path, suite: dict, contracts:
         write_json(output / "audited_export_manifest.json", exported)
         parent.add_artifact(output / "source_provenance.json")
         parent.add_artifact(output / "audited_export_manifest.json")
+        control_directories = {"public": public_dir, "adapted": adapted_dir}
+        if code == "S005":
+            from speaker_id.training.expanded_gallery import verified_s004_controls
+            control_directories, control_proof = verified_s004_controls(root, suite, proof)
+            write_json(output / "completed_s004_control_provenance.json", control_proof)
+            parent.add_artifact(output / "completed_s004_control_provenance.json")
         label_index = {label: index for index, label in enumerate(contract["labels"])}
         control_checks, results = {}, []
-        for recipe in RECIPES:
-            is_control = recipe["method"] == "prototype"
+        for recipe_position, recipe in enumerate(suite["recipes"]):
+            is_control = recipe_position < 2
             if not is_control and set(control_checks) != {"public", "adapted"}:
                 raise ValueError("Both exact source OOF controls must pass before improved recipes")
             name = recipe["source"]
-            source_dir = public_dir if name == "public" else adapted_dir
+            source_dir = control_directories[name]
             recipe_path = output / recipe["id"]
             recipe_path.mkdir()
             child = DurableMLflowRun.prepare(spool_dir=recipe_path / "tracking", parent_run_id=parent.run_id,
@@ -285,13 +302,20 @@ def execute_adapted_suite(root: Path, config_path: Path, suite: dict, contracts:
                         "source_signature": proof[name]["source_signature"]}, **common)
             child.flush(strict=True)
             child.add_artifact(output / "source_provenance.json")
+            if code == "S005":
+                child.add_artifact(output / "completed_s004_control_provenance.json")
             all_predictions, fold_reports = [], []
             for outer in (0, 1):
                 fold_path = recipe_path / f"fold_{outer}"
                 fold_path.mkdir()
                 vectors, valid = arrays[name][outer]
                 role_proof = assert_fixed_role_groups(contracts[name], outer)
-                scores = fixed_role_scores(contracts[name], vectors, valid, outer, recipe["method"])
+                expanded = recipe.get("protocol") == "original_heldout_queries_expanded_gallery"
+                if expanded:
+                    from speaker_id.training.heldout_references import heldout_reference_scores
+                    scores = heldout_reference_scores(contracts[name], vectors, valid, outer)
+                else:
+                    scores = fixed_role_scores(contracts[name], vectors, valid, outer, recipe["method"])
                 query, evaluation = scores["calibration_indices"], scores["outer_indices"]
                 inner_truth = np.asarray([label_index[contract["manifest"][int(i)]["speaker_id"]] for i in query])
                 calibration, curve = calibrate_gate(scores["inner_known_scores"], inner_truth, scores["inner_unknown_similarity"],
@@ -310,6 +334,16 @@ def execute_adapted_suite(root: Path, config_path: Path, suite: dict, contracts:
                     "probability_semantics": "normalized scores, not calibrated posteriors"}
                 # Full per-file attestation is kept once in source_provenance.json.
                 report["checkpoint_binding"] = {key: value for key, value in report["checkpoint_binding"].items() if key != "files"}
+                if expanded:
+                    support_arrays = {key: value for key, value in scores["reference_counts"].items() if isinstance(value, np.ndarray)}
+                    report["reference_counts"] = {key: value for key, value in scores["reference_counts"].items() if key not in support_arrays}
+                    report["reference_counts"]["array_shapes"] = {key: list(value.shape) for key, value in support_arrays.items()}
+                    report["reference_counts"]["support_arrays_artifact"] = "reference_support.npz"
+                    report["scoring_provenance"] = scores["provenance"]
+                    report["threshold_axis_label"] = "Original-query expanded-gallery gate score"
+                    np.savez_compressed(fold_path / "reference_support.npz", **support_arrays,
+                                        calibration_indices=query, known_labels=np.asarray(contract["labels"][1:]))
+                    child.add_artifact(fold_path / "reference_support.npz", f"fold_{outer}/reference_support.npz")
                 write_json(fold_path / "evaluation.json", report)
                 write_json(fold_path / "calibration.json", {"selected": calibration, "curve": curve})
                 write_csv(fold_path / "predictions.csv", predictions)
@@ -345,7 +379,8 @@ def execute_adapted_suite(root: Path, config_path: Path, suite: dict, contracts:
                 child.add_artifact(recipe_path / filename, filename)
             child.log_metrics({"oof/macro_f1_447": pooled["macro_f1"], "oof/accuracy": pooled["accuracy"],
                                **{"oof/" + key: value for key, value in pooled["errors"].items()}}, sync=False)
-            child.write_report(report, markdown=f"# {recipe['id']} {name}\n\nFixed disjoint inner roles; no encoder fitting. Both outer folds evaluated. OOF Macro-F1: {pooled['macro_f1']:.6f}. This is a paired scoring ablation, not a comparison under the S002f crossfit protocol.\n")
+            description = "Fixed disjoint inner roles" if code == "S004" else f"Original held-out queries; reference protocol: {recipe['protocol']}"
+            child.write_report(report, markdown=f"# {recipe['id']} {name}\n\n{description}; no encoder fitting. Both outer folds evaluated. OOF Macro-F1: {pooled['macro_f1']:.6f}. This is a paired scoring ablation, not a comparison under the S002f crossfit protocol.\n")
             child.finish("FINISHED", strict=True)
             child = None
             results.append({"recipe": dict(recipe), "oof": pooled, "folds": fold_reports})
@@ -357,7 +392,10 @@ def execute_adapted_suite(root: Path, config_path: Path, suite: dict, contracts:
             parent.add_artifact(output / filename, filename)
         for result in results:
             parent.log_metrics({result["recipe"]["id"] + "/oof_macro_f1_447": result["oof"]["macro_f1"]}, sync=False)
-        parent.write_report(report, markdown="# S004 paired public/adapted scoring\n\nBoth source baselines reproduced exactly. Four preregistered recipes share the original fixed inner holdout. No outer labels selected coefficients, checkpoints or recipes; no training or audio extraction occurred.\n")
+        heading = "# S004 paired public/adapted scoring" if code == "S004" else "# S005 original-query expanded-gallery comparison"
+        explanation = ("Both source baselines reproduced exactly. Four preregistered recipes share the original fixed inner holdout."
+                       if code == "S004" else "Both S004 fixed-reference controls reproduced exactly. Calibration queries remain outside encoder fitting; each expanded query excludes its whole content group. True-class support increases when the full gallery is restored for outer evaluation.")
+        parent.write_report(report, markdown=f"{heading}\n\n{explanation} No outer labels selected coefficients, checkpoints or recipes; no training or audio extraction occurred.\n")
         parent.finish("FINISHED", strict=True)
         write_json(output / "experiment_state.json", {"status": "complete", "parent_run_id": parent.run_id})
         return {"output": str(output), "parent_run_id": parent.run_id,

@@ -4,10 +4,18 @@ set -euo pipefail
 
 readonly PROJECT_ROOT=/workspace/Speaker-identification-2
 if [ "$#" -ne 1 ]; then
-    printf '%s\n' 'Usage: install_experiment_supervisor.sh <S001|S002|S003|S004|P001|B002|F001|F002|F003>' >&2
+    printf '%s\n' 'Usage: install_experiment_supervisor.sh <S001|S002|S003|S004|S005|P001|B002|F001|F002|F003|F004>' >&2
     exit 2
 fi
 case "$1" in
+    S005)
+        PROGRAM=speaker_id_campp_s005
+        SOURCE=configs/infra/supervisor_campp_expanded_gallery.conf
+        ;;
+    F004)
+        PROGRAM=speaker_id_campp_f004
+        SOURCE=configs/infra/supervisor_campp_finetune_head600.conf
+        ;;
     S004)
         PROGRAM=speaker_id_campp_s004
         SOURCE=configs/infra/supervisor_campp_adapted_scoring.conf

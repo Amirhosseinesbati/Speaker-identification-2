@@ -1,0 +1,134 @@
+{
+  "schema_version": 1,
+  "experiment_code": "S005",
+  "run_name": "S005-campp-original-query-expanded-gallery",
+  "readiness_config": "configs/train/campp_coverage.json",
+  "output_root": "artifacts/training",
+  "calibration_protocol": "original_heldout_queries_expanded_gallery",
+  "threshold_candidates": 201,
+  "probability_temperature": 0.05,
+  "sources": {
+    "public": {
+      "config": "configs/train/campp_coverage.json",
+      "run": "artifacts/training/B002_20260907T150724Z_9b11fe4b",
+      "parent_run_id": "9b5ef17e61d24b9ba438128bf7f24a7a"
+    },
+    "adapted": {
+      "config": "configs/train/campp_finetune_fp32.json",
+      "run": "artifacts/training/F003_20260907T155811Z_9b46953e",
+      "parent_run_id": "12543424acdb4e47ab570ddc4656be0f",
+      "signature": "65b3878e22f294a2d5be59cb87abc9458123b70a5dbec63c2ab50ca75eff1bd1",
+      "git_commit": "c9595f200ef34f8e6c87613cb31707d72626ca06",
+      "export_manifest_paths": [
+        "artifacts/exports/F003_20260907T155811Z_9b46953e.complete.manifest.json",
+        "artifacts/infrastructure/F003_verification/server_export_manifest.json"
+      ],
+      "export_manifest_sha256": "ad14eb6989de8ee5c86a9395af1ba96bae4b683e054fbfe6212e7a1599889ff9",
+      "completed_steps": 600,
+      "folds": {
+        "0": {
+          "child_run_id": "76b2b3897814452aaac03e7a00569088",
+          "checkpoint_sha256": "e32462a9078be0d2c7973636f94c8975658fa9ad50105832e711787702df0976"
+        },
+        "1": {
+          "child_run_id": "3689ef686d464f8fb92e31e26b546724",
+          "checkpoint_sha256": "db5365fe39f2829b48b14a6b7ad6940cb94c37b7b9e7548c993fc298c3c0539b"
+        }
+      }
+    }
+  },
+  "recipes": [
+    {
+      "id": "S005a",
+      "source": "public",
+      "method": "max_reference",
+      "protocol": "fixed_inner_holdout",
+      "unknown_weights": [
+        0.0,
+        0.25,
+        0.5,
+        0.75,
+        1.0
+      ],
+      "margin_weights": [
+        0.0,
+        0.5
+      ]
+    },
+    {
+      "id": "S005b",
+      "source": "adapted",
+      "method": "max_reference",
+      "protocol": "fixed_inner_holdout",
+      "unknown_weights": [
+        0.0,
+        0.25,
+        0.5,
+        0.75,
+        1.0
+      ],
+      "margin_weights": [
+        0.0,
+        0.5
+      ]
+    },
+    {
+      "id": "S005c",
+      "source": "public",
+      "method": "max_reference",
+      "protocol": "original_heldout_queries_expanded_gallery",
+      "unknown_weights": [
+        0.0,
+        0.25,
+        0.5,
+        0.75,
+        1.0
+      ],
+      "margin_weights": [
+        0.0,
+        0.5
+      ]
+    },
+    {
+      "id": "S005d",
+      "source": "adapted",
+      "method": "max_reference",
+      "protocol": "original_heldout_queries_expanded_gallery",
+      "unknown_weights": [
+        0.0,
+        0.25,
+        0.5,
+        0.75,
+        1.0
+      ],
+      "margin_weights": [
+        0.0,
+        0.5
+      ]
+    }
+  ],
+  "hypothesis": "Test whether expanded eligible outer-training reference galleries improve public B002 and adapted F003 scoring while preserving the original encoder-held-out query set. Every query excludes its whole content group from both known and unknown references. Reproduce completed S004c/d exactly before either expanded recipe; no fitting or feature extraction.",
+  "selection_policy": "Exactly four preregistered recipes: public/adapted fixed-reference S004c/d controls, then public/adapted expanded-gallery comparisons. All coefficients and thresholds use only original calibration_query rows, never encoder-fit rows or outer labels. Both fold and pooled control predictions must pass before expanded recipes. No outer selection among the four recipes.",
+  "limitations": [
+    "The 443/445 known calibration queries retain their original 1-2 true-class references after group exclusion; outer evaluation restores 2-3 references. This 50-100% true-class support increase is a calibration distribution shift, even though total inner/outer gallery counts differ by only 1-2 files.",
+    "Other held-out-query rows may serve as references. Calibration observations therefore share reference data and are statistically dependent; optimized inner scores are not an independent evaluation.",
+    "Only original held-out queries may calibrate an adapted encoder. The broader all-training-query crossfit used for frozen S002f is not used here, so this is not a matched S002f protocol comparison.",
+    "Adapted caches remain bound to their own audited outer-fold final checkpoint and file hashes; shared NPZ signatures alone do not establish encoder identity.",
+    "Repeated development-fold comparisons are not an unbiased final test or a hidden leaderboard score. Unknown identities and recording sessions are not fully labeled.",
+    "All 4529 original files and 447 labels remain in evaluation, including 89 zero-signal files with unknown fallback."
+  ],
+  "control": {
+    "run": "artifacts/training/S004_20260907T201829Z_a5e819fb",
+    "parent_run_id": "9477cf258dd9409282d1e4c6decc635d",
+    "recipes": {
+      "public": {
+        "id": "S004c",
+        "child_run_id": "1ebe37d911ea4224ad0e3db5612481bc"
+      },
+      "adapted": {
+        "id": "S004d",
+        "child_run_id": "485d815f5c31430189d249ac1baa08ed"
+      }
+    }
+  }
+}

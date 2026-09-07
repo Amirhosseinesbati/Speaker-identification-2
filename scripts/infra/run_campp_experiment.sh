@@ -9,6 +9,11 @@ if [ "$#" -ne 1 ]; then
     exit 2
 fi
 case "$1" in
+    configs/train/campp_expanded_gallery.json)
+        CONFIG_PATH=$1
+        ENTRYPOINT=scripts/score_expanded.py
+        EXECUTION_FLAG=--execute
+        ;;
     configs/train/campp_adapted_scoring.json)
         CONFIG_PATH=$1
         ENTRYPOINT=scripts/score_adapted.py
@@ -29,7 +34,7 @@ case "$1" in
         ENTRYPOINT=scripts/score_frozen.py
         EXECUTION_FLAG=--execute
         ;;
-    configs/train/campp_coverage.json|configs/train/campp_finetune.json|configs/train/campp_finetune_warmup.json|configs/train/campp_finetune_fp32.json)
+    configs/train/campp_coverage.json|configs/train/campp_finetune.json|configs/train/campp_finetune_warmup.json|configs/train/campp_finetune_fp32.json|configs/train/campp_finetune_head600.json)
         CONFIG_PATH=$1
         ENTRYPOINT=scripts/train.py
         EXECUTION_FLAG=--execute-training
