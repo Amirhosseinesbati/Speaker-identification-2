@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "architecture": "CAMPPlus",
+  "embedding_dim": 192,
+  "sample_rate": 16000,
+  "fbank_bins": 80,
+  "weights_path": "artifacts/models/campp_advanced/campplus_cn_en_common.pt",
+  "weights_bytes": 28044640,
+  "weights_sha256": "92f29b94e6948786a26778c9e302525d185bb08c8b9f5252ed98776902840199",
+  "public_model": "iic/speech_campplus_sv_zh_en_16k-common_advanced",
+  "public_revision": "v1.0.0",
+  "checkpoint_revision": "73001f7ab0bbf7a18739f6e0a48bc1bc74f7a271",
+  "source_commit": "065629c313eaf1a01c65c640c46d77e61e9607b4",
+  "license": "Apache-2.0",
+  "architecture_kwargs": {
+    "feat_dim": 80,
+    "embedding_size": 192,
+    "growth_rate": 32,
+    "bn_size": 4,
+    "init_channels": 128,
+    "config_str": "batchnorm-relu",
+    "memory_efficient": false
+  },
+  "frontend": {
+    "decoder": "soundfile",
+    "channel_policy": "maximum_mean_square_energy",
+    "resampling": "scipy.signal.resample_poly",
+    "fbank": "torchaudio.compliance.kaldi.fbank",
+    "frame_length_ms": 25.0,
+    "frame_shift_ms": 10.0,
+    "window_type": "povey",
+    "dither": 0.0,
+    "snip_edges": true,
+    "mean_normalization": true,
+    "vad": false,
+    "gain_normalization": false,
+    "zero_signal_policy": "unknown"
+  },
+  "inference": {"seconds": 180.0, "maximum_windows": 1},
+  "source_references": {
+    "model_card": "https://modelscope.cn/api/v1/models/iic/speech_campplus_sv_zh_en_16k-common_advanced/repo?Revision=v1.0.0&FilePath=README.md",
+    "checkpoint_metadata": "https://modelscope.cn/api/v1/models/iic/speech_campplus_sv_zh_en_16k-common_advanced/repo/files?Revision=v1.0.0&Recursive=true",
+    "registry": "https://raw.githubusercontent.com/modelscope/3D-Speaker/065629c313eaf1a01c65c640c46d77e61e9607b4/speakerlab/bin/infer_sv.py"
+  }
+}

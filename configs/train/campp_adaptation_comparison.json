@@ -1,0 +1,186 @@
+{
+  "schema_version": 1,
+  "experiment_code": "S006",
+  "run_name": "S006-campp-head100-vs-head600-fixed-expanded",
+  "readiness_config": "configs/train/campp_coverage.json",
+  "output_root": "artifacts/training",
+  "calibration_protocol": "fixed_inner_holdout",
+  "threshold_candidates": 201,
+  "probability_temperature": 0.05,
+  "expanded_arm": true,
+  "sources": {
+    "F003": {
+      "config": "configs/train/campp_finetune_fp32.json",
+      "run": "artifacts/training/F003_20260907T155811Z_9b46953e",
+      "parent_run_id": "12543424acdb4e47ab570ddc4656be0f",
+      "signature": "65b3878e22f294a2d5be59cb87abc9458123b70a5dbec63c2ab50ca75eff1bd1",
+      "git_commit": "c9595f200ef34f8e6c87613cb31707d72626ca06",
+      "export_manifest_paths": [
+        "artifacts/exports/F003_20260907T155811Z_9b46953e.complete.manifest.json",
+        "artifacts/infrastructure/F003_verification/server_export_manifest.json"
+      ],
+      "export_manifest_sha256": "ad14eb6989de8ee5c86a9395af1ba96bae4b683e054fbfe6212e7a1599889ff9",
+      "completed_steps": 600,
+      "folds": {
+        "0": {
+          "child_run_id": "76b2b3897814452aaac03e7a00569088",
+          "checkpoint_sha256": "e32462a9078be0d2c7973636f94c8975658fa9ad50105832e711787702df0976"
+        },
+        "1": {
+          "child_run_id": "3689ef686d464f8fb92e31e26b546724",
+          "checkpoint_sha256": "db5365fe39f2829b48b14a6b7ad6940cb94c37b7b9e7548c993fc298c3c0539b"
+        }
+      }
+    },
+    "F004": {
+      "config": "configs/train/campp_finetune_head600.json",
+      "run": "artifacts/training/F004_20260907T211351Z_fa939cd0",
+      "parent_run_id": "a87bd6a800724f9f9963d9ee5b780bc1",
+      "signature": "a6ba74ad53257e1fed7f26afc3d3f9a634c040766cc392e61c8580e8413e74b7",
+      "git_commit": "ce13ca81705f40b96d110dd12b1a1fc2aed81298",
+      "export_manifest_paths": [
+        "artifacts/exports/F004_20260907T211351Z_fa939cd0.complete.manifest.json",
+        "artifacts/infrastructure/F004_verification/server_export_manifest.json"
+      ],
+      "export_manifest_sha256": "fcd14da17c0ec4d381998c7e2f632182c96e89eb2029df4b40b01f20f069a2a6",
+      "completed_steps": 1100,
+      "folds": {
+        "0": {
+          "child_run_id": "e854a866477a444ebb674637a19990a1",
+          "checkpoint_sha256": "e05801fc9a240a05735d6113f99ed7afc75c9edbc1bcafab2c93ded4cb4a2eec"
+        },
+        "1": {
+          "child_run_id": "0f5faecc19f24837827e4e8c8a0b354a",
+          "checkpoint_sha256": "036c1efdbfc9ad3ed32c0dc7f516d598c105414d4e430ee3144277a79594001f"
+        }
+      }
+    }
+  },
+  "controls": {
+    "fixed": {
+      "run": "artifacts/training/S004_20260907T201829Z_a5e819fb",
+      "parent_run_id": "9477cf258dd9409282d1e4c6decc635d",
+      "child_run_id": "485d815f5c31430189d249ac1baa08ed",
+      "recipe_id": "S004d",
+      "report_sha256": "5205bd3a41447f6b92a8714248f18b10c2e7708aec1d4ca9eefe228a0955c698",
+      "recipe_report_sha256": "34e11b714cb62f38f5f1a084c8402647869cb3b385912f189b9a76560719c405",
+      "source_provenance_sha256": "2138a85457c7d74fdfbbb47455cfbc8acc8467c369dc780a57e524a9ef8590e6",
+      "resolved_config_sha256": "549a459ec6a7b168fd02bc6132824f863506ea047ff88a363c9b895f344a372f"
+    },
+    "expanded": {
+      "run": "artifacts/training/S005_20260907T210401Z_c7d95c74",
+      "parent_run_id": "b7eca2f8a1794523be6ecea9f57d870f",
+      "child_run_id": "7d5d95c0276c439887ca94165cfa3cab",
+      "recipe_id": "S005d",
+      "report_sha256": "95cda315c396b3c37eaa2298c0eab46ffa8c98a27e29d05733824a7f9b7a47b0",
+      "recipe_report_sha256": "c31869490370f789db32f76d6289a67b4483f3f7fe69c87a6c5b40a180c93af5",
+      "source_provenance_sha256": "2138a85457c7d74fdfbbb47455cfbc8acc8467c369dc780a57e524a9ef8590e6",
+      "resolved_config_sha256": "b0924f656cbd46032e74477812e71812dcbb39a918134051549ad038d49a915e"
+    }
+  },
+  "recipes": [
+    {
+      "id": "S006a",
+      "source": "F003",
+      "method": "prototype",
+      "protocol": "fixed_inner_holdout",
+      "control": "F003_prototype",
+      "unknown_weights": [
+        0.0
+      ],
+      "margin_weights": [
+        0.0
+      ]
+    },
+    {
+      "id": "S006b",
+      "source": "F004",
+      "method": "prototype",
+      "protocol": "fixed_inner_holdout",
+      "control": "F004_prototype",
+      "unknown_weights": [
+        0.0
+      ],
+      "margin_weights": [
+        0.0
+      ]
+    },
+    {
+      "id": "S006c",
+      "source": "F003",
+      "method": "max_reference",
+      "protocol": "fixed_inner_holdout",
+      "control": "S004d",
+      "unknown_weights": [
+        0.0,
+        0.25,
+        0.5,
+        0.75,
+        1.0
+      ],
+      "margin_weights": [
+        0.0,
+        0.5
+      ]
+    },
+    {
+      "id": "S006d",
+      "source": "F004",
+      "method": "max_reference",
+      "protocol": "fixed_inner_holdout",
+      "control": null,
+      "unknown_weights": [
+        0.0,
+        0.25,
+        0.5,
+        0.75,
+        1.0
+      ],
+      "margin_weights": [
+        0.0,
+        0.5
+      ]
+    },
+    {
+      "id": "S006e",
+      "source": "F003",
+      "method": "max_reference",
+      "protocol": "original_heldout_queries_expanded_gallery",
+      "control": "S005d",
+      "unknown_weights": [
+        0.0,
+        0.25,
+        0.5,
+        0.75,
+        1.0
+      ],
+      "margin_weights": [
+        0.0,
+        0.5
+      ]
+    },
+    {
+      "id": "S006f",
+      "source": "F004",
+      "method": "max_reference",
+      "protocol": "original_heldout_queries_expanded_gallery",
+      "control": null,
+      "unknown_weights": [
+        0.0,
+        0.25,
+        0.5,
+        0.75,
+        1.0
+      ],
+      "margin_weights": [
+        0.0,
+        0.5
+      ]
+    }
+  ],
+  "selection_policy": "inner_queries_only; fixed final checkpoints; no outer recipe selection",
+  "decision_rule": {
+    "minimum_pooled_improvement": 0.003,
+    "maximum_fold_decline": 0.005
+  }
+}

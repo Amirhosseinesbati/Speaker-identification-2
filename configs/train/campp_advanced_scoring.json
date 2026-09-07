@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "experiment_code": "S007",
+  "run_name": "S007-campp-advanced192-frozen-full",
+  "readiness_config": "configs/train/campp_coverage.json",
+  "output_root": "artifacts/training",
+  "source": {
+    "baseline_config": "configs/train/campp_coverage.json",
+    "source_run": "artifacts/training/B002_20260907T150724Z_9b11fe4b",
+    "source_parent_run_id": "9b5ef17e61d24b9ba438128bf7f24a7a",
+    "control_run": "artifacts/training/S002_20260907T153007Z_ec71bae8",
+    "control_parent_run_id": "7f72cd37eee249589d405d8e4bc63e61",
+    "control_recipe_id": "S002f"
+  },
+  "candidate_config": "configs/model/campp_advanced.json",
+  "recipes": [
+    {
+      "id": "S007a",
+      "source": "public",
+      "method": "max_reference",
+      "calibration_protocol": "leave_content_group_out"
+    },
+    {
+      "id": "S007b",
+      "source": "advanced",
+      "method": "max_reference",
+      "calibration_protocol": "leave_content_group_out"
+    }
+  ],
+  "unknown_weights": [
+    0.0,
+    0.25,
+    0.5,
+    0.75,
+    1.0
+  ],
+  "margin_weights": [
+    0.0,
+    0.5
+  ],
+  "threshold_candidates": 201,
+  "probability_temperature": 0.05,
+  "hypothesis": "Compare the official Chinese/English CAM++192 frozen encoder against the existing public512 full-utterance S002f recipe under identical group-excluded max-reference calibration. No new supervised training or learned embedding transform. Multilingual benefit on Persian is an unmeasured hypothesis.",
+  "selection_policy": "Both-fold and pooled exact S002f controls finish before candidate extraction. Each coefficient and threshold is fit only on group-excluded outer-training queries. One candidate, no outer-based parameter or checkpoint selection.",
+  "execution_policy": "Prepare during F004; start only after completed S006 if neither F004 recipe S006d nor S006f reaches pooled OOF Macro-F1 0.965. Manual dispatch; no automatic chaining.",
+  "limitations": [
+    "Different public pretraining and projection dimension; not evidence of a larger backbone or a guaranteed Persian advantage.",
+    "Repeated OOF development is not an untouched hidden test or a promise of a leaderboard score.",
+    "Unknown-person and session disjointness are not established by content groups.",
+    "Calibration removes the query content group; outer restores complete outer-training gallery support.",
+    "Preserve all4529files,447labels,and89zero-signalunknownfallbacks."
+  ]
+}
