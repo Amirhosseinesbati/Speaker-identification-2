@@ -18,6 +18,8 @@ def main():
     parser.add_argument("--device", choices=["cpu", "cuda"], default="cuda")
     parser.add_argument("--report", type=Path, default=ROOT / "artifacts/infrastructure/campp_probe.json")
     parser.add_argument("--threads", type=int, default=4)
+    parser.add_argument("--use-inference-config", action="store_true",
+                        help="Measure the actual configured extraction policy, including long-utterance memory")
     args = parser.parse_args()
     import numpy as np
     import torch
@@ -33,7 +35,11 @@ def main():
         raise ValueError("Probe model differs from the selected experiment model contract")
     started = time.monotonic()
     encoder = load_campp(config, ROOT, args.device)
-    vector, info = extract_embedding(encoder, args.audio, device=args.device, seconds=3.0, maximum_windows=1)
+    inference = contract["config"]["inference"] if args.use_inference_config else {"seconds": 3.0, "maximum_windows": 1}
+    if args.device == "cuda":
+        torch.cuda.reset_peak_memory_stats()
+    vector, info = extract_embedding(encoder, args.audio, device=args.device, **inference)
+    inference_peak_memory = torch.cuda.max_memory_allocated() if args.device == "cuda" else None
     if not info["nonzero_signal"] or not np.isfinite(vector).all() or abs(float(np.linalg.norm(vector)) - 1) > 1e-5:
         raise ValueError("Probe must use nonzero real audio and produce a unit 512D embedding")
     fit_config = contract["config"]["fit"]
@@ -56,6 +62,8 @@ def main():
               "torch": torch.__version__, "torchaudio": torchaudio.__version__,
               "gpu": torch.cuda.get_device_name(0) if args.device == "cuda" else None,
               "elapsed_seconds": time.monotonic() - started, **info}
+    report["inference_policy"] = inference
+    report["inference_peak_allocated_bytes"] = inference_peak_memory
     report["model_config_sha256"] = file_sha256(args.model_config)
     report["input_hashes"] = contract["input_hashes"]
     report["code_hashes"] = contract["code_hashes"]
