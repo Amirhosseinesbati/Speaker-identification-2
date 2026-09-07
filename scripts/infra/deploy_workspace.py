@@ -225,7 +225,10 @@ def main():
             [".venv/bin/python", "scripts/infra/preflight_runtime.py", "--require-cuda", "--expected-gpu", "RTX3090", "--min-free-disk-gb", "10"],
             [".venv/bin/python", "scripts/checks/probe_campp.py", "--audio", "data/raw/" + audio, "--device", "cuda", "--config", config["training_config"]],
             [".venv/bin/python", "scripts/infra/with_project_env.py", ".venv/bin/python", "scripts/checks/probe_mlflow.py", "--experiment-name", config["mlflow_experiment_name"], "--spool-dir", spool, "--config", config["training_config"],
-             "--fingerprint", "model_config=configs/model/campp.json", "--fingerprint", "manifest=data/processed/eda_v1/audio_manifest.csv", "--fingerprint", "folds=data/processed/eda_v1/folds.csv", "--fingerprint", "roles=data/processed/eda_v1/calibration_roles.csv", "--fingerprint", "label_map=data/processed/eda_v1/label_map.json", "--fingerprint", "weights=artifacts/models/campp/campplus_voxceleb.bin"],
+             "--fingerprint", "model_config=configs/model/campp.json", "--fingerprint", "manifest=data/processed/eda_v1/audio_manifest.csv", "--fingerprint", "folds=data/processed/eda_v1/folds.csv", "--fingerprint", "roles=data/processed/eda_v1/calibration_roles.csv", "--fingerprint", "label_map=data/processed/eda_v1/label_map.json", "--fingerprint", "weights=artifacts/models/campp/campplus_voxceleb.bin",
+             "--evidence-report", "data=artifacts/infrastructure/data_readiness.json",
+             "--evidence-report", "runtime=artifacts/infrastructure/runtime_readiness.json",
+             "--evidence-report", "campp=artifacts/infrastructure/campp_probe.json"],
             [".venv/bin/python", "scripts/infra/check_readiness.py", "--config", config["training_config"], "--mlflow-report", spool + "/preflight_result.json"],
         ]
         for index, command in enumerate(commands):
