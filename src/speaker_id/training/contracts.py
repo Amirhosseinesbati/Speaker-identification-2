@@ -5,16 +5,52 @@ from collections import Counter, defaultdict
 import csv
 import hashlib
 import json
+import math
 from pathlib import Path
 
 from speaker_id.data.splits import truth
 from speaker_id.evaluation.metrics import validate_labels
 from speaker_id.models.campp import file_sha256, validate_model_config
+from speaker_id.training.schedules import validate_adaptation_schedule
 
 
 def read_csv(path: Path) -> list[dict]:
     with path.open(encoding="utf-8-sig", newline="") as handle:
         return list(csv.DictReader(handle))
+
+
+def validate_fit_settings(fit: dict) -> None:
+    required = {"epochs", "steps_per_epoch", "batch_size", "crop_seconds", "encoder_lr", "head_lr",
+                "weight_decay", "margin", "scale", "freeze_batchnorm", "trainable_prefixes",
+                "gradient_clip_norm", "mixed_precision", "checkpoint_every_steps", "epoch_selection", "augmentation"}
+    if (not isinstance(fit, dict) or not required.issubset(fit)
+            or set(fit) - required - {"adaptation_schedule"}):
+        raise ValueError("Missing or unsupported fit settings")
+    for key in ("epochs", "steps_per_epoch", "batch_size", "checkpoint_every_steps"):
+        if type(fit[key]) is not int or fit[key] <= 0:
+            raise ValueError(f"{key} must be a positive integer")
+    for key in ("crop_seconds", "encoder_lr", "head_lr", "gradient_clip_norm", "scale"):
+        value = fit[key]
+        if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
+            raise ValueError(f"{key} must be positive and finite")
+    for key in ("weight_decay", "margin"):
+        value = fit[key]
+        if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+            raise ValueError(f"{key} must be nonnegative and finite")
+    if fit["margin"] >= math.pi / 2:
+        raise ValueError("AAM margin must be smaller than pi/2")
+    if fit["freeze_batchnorm"] is not True or fit["epoch_selection"] != "fixed_steps_no_outer_selection":
+        raise ValueError("Initial recipes require fixed BN and fixed-step selection")
+    if type(fit["mixed_precision"]) is not bool:
+        raise ValueError("mixed_precision must be a boolean")
+    prefixes = fit["trainable_prefixes"]
+    if (not isinstance(prefixes, list) or not prefixes
+            or any(not isinstance(item, str) or not item for item in prefixes)
+            or len(set(prefixes)) != len(prefixes)):
+        raise ValueError("Trainable prefixes must be a nonempty unique list of strings")
+    if fit["augmentation"] != "none_initial_control":
+        raise ValueError("Unimplemented augmentation cannot silently change an experiment")
+    validate_adaptation_schedule(fit)
 
 
 def load_contract(config_path: Path, root: Path, *, verify_audio: bool = False) -> dict:
@@ -33,13 +69,7 @@ def load_contract(config_path: Path, root: Path, *, verify_audio: bool = False) 
         raise ValueError("Invalid calibration configuration")
     if config["inference"]["seconds"] <= 0 or config["inference"]["maximum_windows"] < 1:
         raise ValueError("Invalid inference windows")
-    fit = config["fit"]
-    if any(fit[key] <= 0 for key in ("epochs", "steps_per_epoch", "batch_size", "crop_seconds", "encoder_lr", "head_lr", "gradient_clip_norm", "checkpoint_every_steps")):
-        raise ValueError("Fit settings must be positive")
-    if not fit["freeze_batchnorm"] or fit["epoch_selection"] != "fixed_steps_no_outer_selection":
-        raise ValueError("Initial recipe requires fixed BN and fixed-step selection")
-    if fit["augmentation"] != "none_initial_control":
-        raise ValueError("Unimplemented augmentation cannot silently change an experiment")
+    validate_fit_settings(config["fit"])
     inputs = {key: (root / config[key]).resolve() for key in ("model_config", "manifest", "folds", "roles", "label_map")}
     hashes = {key: file_sha256(path) for key, path in inputs.items()}
     # Resume/caches are invalidated by implementation changes, not just config.

@@ -4,7 +4,7 @@ set -euo pipefail
 
 readonly PROJECT_ROOT=/workspace/Speaker-identification-2
 if [ "$#" -ne 1 ]; then
-    printf '%s\n' 'Usage: install_experiment_supervisor.sh <S001|B002|F001>' >&2
+    printf '%s\n' 'Usage: install_experiment_supervisor.sh <S001|B002|F001|F002>' >&2
     exit 2
 fi
 case "$1" in
@@ -19,6 +19,10 @@ case "$1" in
     F001)
         PROGRAM=speaker_id_campp_f001
         SOURCE=configs/infra/supervisor_campp_finetune.conf
+        ;;
+    F002)
+        PROGRAM=speaker_id_campp_f002
+        SOURCE=configs/infra/supervisor_campp_finetune_warmup.conf
         ;;
     *)
         printf '%s\n' 'Experiment program is not allowlisted.' >&2

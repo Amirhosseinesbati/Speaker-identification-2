@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "experiment_code": "F002",
+  "run_name": "F002-campp-head-warmup-tail-aam",
+  "hypothesis": "Prepare a random known-only AAM head for 100 head-only steps before 500 conservative CAM++ tail updates. Ramp tail margin from 0 to 0.2 over 100 tail steps and encoder LR to 1e-5 over 50 tail steps, then cosine decay; the head LR warms linearly from 1e-4 to 1e-3 before tail cosine decay. Compare with frozen B002 under identical full-utterance inference, fixed roles and inner-only calibration. Improvement and launch are conditional on B002 evidence; no augmentation is added.",
+  "mode": "fine_tune",
+  "model_config": "configs/model/campp.json",
+  "data_dir": "data/raw",
+  "manifest": "data/processed/eda_v1/audio_manifest.csv",
+  "folds": "data/processed/eda_v1/folds.csv",
+  "roles": "data/processed/eda_v1/calibration_roles.csv",
+  "label_map": "data/processed/eda_v1/label_map.json",
+  "output_root": "artifacts/training",
+  "seed": 20260907,
+  "device": "cuda",
+  "cpu_threads": 4,
+  "fold_ids": [
+    0,
+    1
+  ],
+  "expected_source_files": 4529,
+  "known_classes": 446,
+  "evaluation_classes": 447,
+  "tracking_required": true,
+  "inference": {
+    "seconds": 180.0,
+    "maximum_windows": 1
+  },
+  "scoring": {
+    "method": "normalized_mean_prototype",
+    "calibration": "global_max_cosine",
+    "threshold_candidates": 201,
+    "probability_temperature": 0.05
+  },
+  "fit": {
+    "epochs": 5,
+    "steps_per_epoch": 100,
+    "batch_size": 32,
+    "crop_seconds": 3.0,
+    "encoder_lr": 1e-05,
+    "head_lr": 0.001,
+    "weight_decay": 0.0001,
+    "margin": 0.2,
+    "scale": 30.0,
+    "freeze_batchnorm": true,
+    "trainable_prefixes": [
+      "xvector.block3",
+      "xvector.transit3",
+      "xvector.out_nonlinear",
+      "xvector.dense"
+    ],
+    "gradient_clip_norm": 5.0,
+    "mixed_precision": true,
+    "checkpoint_every_steps": 100,
+    "epoch_selection": "fixed_steps_no_outer_selection",
+    "augmentation": "none_initial_control",
+    "adaptation_schedule": {
+      "scheme": "head_warmup_tail_v1",
+      "head_only_steps": 100,
+      "margin_ramp_tail_steps": 100,
+      "encoder_lr_warmup_tail_steps": 50,
+      "head_lr_warmup_start_factor": 0.1
+    }
+  },
+  "expected_vast_instance_id": 50079023
+}

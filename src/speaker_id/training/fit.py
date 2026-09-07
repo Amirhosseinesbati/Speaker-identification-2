@@ -12,6 +12,8 @@ from torch import nn
 from torch.nn import functional as F
 
 from speaker_id.models.campp import crop_waveform, make_fbank, read_mono
+from speaker_id.training.schedules import (adaptation_checkpoint_state, adaptation_step,
+                                          adaptation_total_steps, validate_adaptation_schedule)
 
 
 class AAMHead(nn.Module):
@@ -81,9 +83,11 @@ def fit_encoder(encoder, roles: list[dict], labels: list[str], root: Path,
     optimizer = torch.optim.AdamW([
         {"params": [p for p in encoder.parameters() if p.requires_grad], "lr": fit["encoder_lr"]},
         {"params": head.parameters(), "lr": fit["head_lr"]}], weight_decay=fit["weight_decay"])
-    total_steps = fit["epochs"] * fit["steps_per_epoch"]
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_steps,
-                                                          eta_min=0)
+    adaptation = validate_adaptation_schedule(fit)
+    total_steps = adaptation_total_steps(fit)
+    # Preserve the original F001 scheduler and update order when not opted in.
+    scheduler = (None if adaptation else
+                 torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_steps, eta_min=0))
     scaler = torch.amp.GradScaler("cuda", enabled=fit["mixed_precision"])
     checkpoint = output / "last.pt"
     start_step = 0
@@ -91,14 +95,20 @@ def fit_encoder(encoder, roles: list[dict], labels: list[str], root: Path,
         state = torch.load(checkpoint, map_location=config["device"], weights_only=True)
         if state["signature"] != signature or state["outer_fold"] != outer:
             raise ValueError("Resume checkpoint belongs to a different recipe or fold")
+        start_step = state["completed_steps"]
+        if type(start_step) is not int or not 0 <= start_step <= total_steps:
+            raise ValueError("Checkpoint committed-step count is outside this recipe")
+        if adaptation and (state.get("adaptation_schedule") != adaptation
+                           or state.get("schedule_state") != adaptation_checkpoint_state(fit, start_step)):
+            raise ValueError("Checkpoint adaptation phase or schedule differs from its committed step")
         encoder.load_state_dict(state["encoder"], strict=True)
         head.load_state_dict(state["head"], strict=True)
         optimizer.load_state_dict(state["optimizer"])
-        scheduler.load_state_dict(state["scheduler"])
+        if scheduler is not None:
+            scheduler.load_state_dict(state["scheduler"])
         scaler.load_state_dict(state["scaler"])
         torch.set_rng_state(state["torch_rng"].cpu())
         torch.cuda.set_rng_state_all([item.cpu() for item in state["cuda_rng"]])
-        start_step = state["completed_steps"]
     elif checkpoint.exists():
         raise FileExistsError("Existing checkpoint requires explicit --resume")
     label_to_index = {label: index for index, label in enumerate(labels[1:])}
@@ -124,12 +134,32 @@ def fit_encoder(encoder, roles: list[dict], labels: list[str], root: Path,
     freeze_batchnorm(encoder)
     head.train()
     def save(completed_steps):
-        atomic_checkpoint({"format_version": 1, "signature": signature, "outer_fold": outer,
-                           "completed_steps": completed_steps, "encoder": encoder.state_dict(),
-                           "head": head.state_dict(), "optimizer": optimizer.state_dict(),
-                           "scheduler": scheduler.state_dict(), "scaler": scaler.state_dict(),
-                           "torch_rng": torch.get_rng_state(), "cuda_rng": torch.cuda.get_rng_state_all()}, checkpoint)
+        payload = {"format_version": 2 if adaptation else 1, "signature": signature, "outer_fold": outer,
+                   "completed_steps": completed_steps, "encoder": encoder.state_dict(),
+                   "head": head.state_dict(), "optimizer": optimizer.state_dict(),
+                   "scheduler": scheduler.state_dict() if scheduler is not None else None,
+                   "scaler": scaler.state_dict(), "torch_rng": torch.get_rng_state(),
+                   "cuda_rng": torch.cuda.get_rng_state_all()}
+        if adaptation:
+            payload.update(adaptation_schedule=dict(adaptation),
+                           schedule_state=adaptation_checkpoint_state(fit, completed_steps))
+        atomic_checkpoint(payload, checkpoint)
+    current_phase = None
     for step in range(start_step, total_steps):
+        phase = "tail"
+        if adaptation:
+            scheduled = adaptation_step(fit, step)
+            phase = scheduled["phase"]
+            optimizer.param_groups[0]["lr"] = scheduled["encoder_lr"]
+            optimizer.param_groups[1]["lr"] = scheduled["head_lr"]
+            head.margin = scheduled["margin"]
+            if phase != current_phase:
+                if phase == "head_only":
+                    encoder.eval()
+                else:
+                    encoder.train()
+                    freeze_batchnorm(encoder)
+                current_phase = phase
         # Reproducible UUID-balanced sampling, independent of global NumPy state.
         rng = np.random.default_rng(seed + outer * 10_000_000 + step)
         selected_labels = rng.choice(labels[1:], fit["batch_size"], replace=fit["batch_size"] > 446)
@@ -144,8 +174,13 @@ def fit_encoder(encoder, roles: list[dict], labels: list[str], root: Path,
         features = torch.stack(batch).to(config["device"])
         targets_tensor = torch.tensor(targets, dtype=torch.long, device=config["device"])
         optimizer.zero_grad(set_to_none=True)
-        with torch.autocast("cuda", dtype=torch.float16, enabled=fit["mixed_precision"]):
-            embeddings = encoder(features)
+        if phase == "head_only":
+            # Eval alone does not stop gradients; keep both requirements explicit.
+            with torch.no_grad(), torch.autocast("cuda", dtype=torch.float16, enabled=fit["mixed_precision"]):
+                embeddings = encoder(features)
+        else:
+            with torch.autocast("cuda", dtype=torch.float16, enabled=fit["mixed_precision"]):
+                embeddings = encoder(features)
         logits = head(embeddings, targets_tensor)
         loss = F.cross_entropy(logits, targets_tensor)
         if not torch.isfinite(loss):
@@ -157,7 +192,8 @@ def fit_encoder(encoder, roles: list[dict], labels: list[str], root: Path,
             raise FloatingPointError(f"Nonfinite gradient at step {step}; optimizer was not advanced")
         scaler.step(optimizer)
         scaler.update()
-        scheduler.step()
+        if scheduler is not None:
+            scheduler.step()
         metrics = {"fit/loss_aam": float(loss.detach().cpu()),
                    "fit/head_accuracy": float((logits.argmax(1) == targets_tensor).float().mean().detach().cpu()),
                    "fit/gradient_norm": float(gradient_norm.detach().cpu()),
@@ -165,14 +201,32 @@ def fit_encoder(encoder, roles: list[dict], labels: list[str], root: Path,
                    "fit/head_lr": float(optimizer.param_groups[1]["lr"]),
                    "fit/gpu_allocated_mb": torch.cuda.max_memory_allocated() / 2**20,
                    "fit/elapsed_seconds": time.monotonic() - started}
+        if adaptation:
+            committed = adaptation_checkpoint_state(fit, step + 1)
+            metrics.update({"fit/margin": float(head.margin), "fit/phase_head_only": float(phase == "head_only"),
+                            "fit/committed_steps": step + 1,
+                            "fit/head_only_committed_steps": committed["head_only_completed_steps"],
+                            "fit/tail_committed_steps": committed["tail_completed_steps"]})
         with history_path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps({"step": step + 1, **metrics}) + "\n")
+            handle.write(json.dumps({"step": step + 1, **({"phase": phase} if adaptation else {}), **metrics}) + "\n")
         tracker.log_metrics(metrics, step=step + 1, sync=(step + 1) % 10 == 0, strict=False)
+        if adaptation and ((step + 1) % 10 == 0 or step + 1 == total_steps):
+            print(json.dumps({"stage": "fit", "outer_fold": outer, "phase": phase,
+                              "completed_steps": step + 1, "total_steps": total_steps,
+                              "tail_completed_steps": committed["tail_completed_steps"],
+                              "margin": head.margin, "encoder_lr": metrics["fit/encoder_lr"],
+                              "head_lr": metrics["fit/head_lr"], "loss_aam": metrics["fit/loss_aam"]}), flush=True)
         if (step + 1) % fit["checkpoint_every_steps"] == 0 or step + 1 == total_steps:
             save(step + 1)
     encoder.eval()
     tracker.add_artifact(checkpoint, "checkpoints/last.pt")
     tracker.add_artifact(history_path, "training/fit_history.jsonl")
-    return {**details, "completed_steps": total_steps, "initial_step": start_step,
+    adaptation_report = ({"adaptation_schedule": dict(adaptation),
+                          "schedule_state": adaptation_checkpoint_state(fit, total_steps),
+                          "final_update_settings": adaptation_step(fit, total_steps - 1),
+                          "learning_rate_log_semantics": "Rates actually used for the reported update",
+                          "head_only_encoder_policy": "eval and no_grad; no encoder optimizer update"}
+                         if adaptation else {})
+    return {**details, **adaptation_report, "completed_steps": total_steps, "initial_step": start_step,
             "epoch_selection": "fixed_steps_no_outer_selection",
             "elapsed_seconds": time.monotonic() - started, "augmentation": fit["augmentation"]}
