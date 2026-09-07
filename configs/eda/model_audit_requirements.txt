@@ -1,0 +1,12 @@
+# Observed direct research-runtime packages, not a full dependency lock.
+# Python 3.12.13. Clean installation recipe is not yet tested.
+# Install CUDA wheels separately from https://download.pytorch.org/whl/cu126:
+# torch==2.11.0+cu126 torchaudio==2.11.0+cu126
+# This file is NOT the leaderboard/submission environment.
+numpy==2.4.6
+scipy==1.18.0
+soundfile==0.14.0
+pandas==2.3.3
+speechbrain==1.1.0
+transformers==4.57.6
+librosa==0.11.0

@@ -1,0 +1,27 @@
+{
+  "architecture": "CAMPPlus",
+  "embedding_dim": 512,
+  "sample_rate": 16000,
+  "fbank_bins": 80,
+  "weights_path": "artifacts/models/campp/campplus_voxceleb.bin",
+  "weights_sha256": "5b1a88b6f8d85826fabef804779c3372b42f3af21457fa48bd5c097c0686b2de",
+  "public_model": "iic/speech_campplus_sv_en_voxceleb_16k",
+  "public_revision": "v1.0.2",
+  "source_commit": "065629c313eaf1a01c65c640c46d77e61e9607b4",
+  "license": "Apache-2.0",
+  "frontend": {
+    "decoder": "soundfile",
+    "channel_policy": "maximum_mean_square_energy",
+    "resampling": "scipy.signal.resample_poly",
+    "fbank": "torchaudio.compliance.kaldi.fbank",
+    "frame_length_ms": 25.0,
+    "frame_shift_ms": 10.0,
+    "window_type": "povey",
+    "dither": 0.0,
+    "snip_edges": true,
+    "mean_normalization": true,
+    "vad": false,
+    "gain_normalization": false,
+    "zero_signal_policy": "unknown"
+  }
+}

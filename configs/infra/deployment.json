@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "instance_id": 50079023,
+  "gpu": "RTX 3090",
+  "repository": "https://github.com/Amirhosseinesbati/Speaker-identification-2.git",
+  "branch": "develop",
+  "remote_workspace": "/workspace/Speaker-identification-2",
+  "archive_path": "data/incoming/raw.zip",
+  "archive_size_bytes": 10084914268,
+  "archive_sha256": "9b01450dd59aa13909f8416e4b2450d512b88f5a9f45d398824937dd63e22ac6",
+  "mlflow_experiment_name": "iaaa2026-campp-infrastructure-20260907",
+  "metadata_files": [
+    "data/processed/eda_v1/audio_manifest.csv",
+    "data/processed/eda_v1/folds.csv",
+    "data/processed/eda_v1/calibration_roles.csv",
+    "data/processed/eda_v1/label_map.json"
+  ],
+  "training_config": "configs/train/campp_baseline.json",
+  "training_started": false
+}

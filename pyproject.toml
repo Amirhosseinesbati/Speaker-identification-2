@@ -1,7 +1,42 @@
 [project]
 name = "speaker-identification-2"
 version = "0.1.0"
-description = "Add your description here"
+description = "Reproducible audio analysis and open-set speaker identification for IAAA 2026"
 readme = "README.md"
-requires-python = ">=3.12"
-dependencies = []
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "numpy==2.2.6",
+    "scipy==1.15.3",
+    "soundfile==0.13.1",
+]
+
+[dependency-groups]
+eda = [
+    "pandas==2.3.3",
+    "matplotlib==3.11.1",
+    "webrtcvad-wheels==2.0.14",
+]
+train = [
+    "pip==25.2",
+    "torch==2.10.0",
+    "torchaudio==2.10.0",
+    "mlflow-skinny==3.7.0",
+    "matplotlib==3.11.1",
+]
+ops = [
+    "vastai==1.6.0",
+    "xdg==6.0.0",
+    "mlflow-skinny==3.7.0",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+torchaudio = { index = "pytorch-cu128" }
+
+[tool.uv]
+package = false
