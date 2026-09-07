@@ -28,11 +28,17 @@ def main():
         raise SystemExit("Selected instance is not confirmed running. Refresh it using vast_control.py show.")
     if not args.identity_file.is_file():
         raise SystemExit("SSH identity file does not exist or is not accessible.")
-    destination = "root@" + instance["ssh_host"]
+    direct_ports = (instance.get("ports") or {}).get("22/tcp", [])
+    if direct_ports and instance.get("public_ipaddr"):
+        host, port = instance["public_ipaddr"], direct_ports[0]["HostPort"]
+    else:
+        host, port = instance["ssh_host"], instance["ssh_port"]
+    destination = "root@" + host
     options = ["-i", str(args.identity_file.resolve()), "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes",
-               "-o", "ConnectTimeout=20", "-o", "StrictHostKeyChecking=accept-new"]
-    ssh = ["ssh", *options, "-p", str(instance["ssh_port"]), destination]
-    scp = ["scp", *options, "-P", str(instance["ssh_port"])]
+               "-o", "ConnectTimeout=20", "-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=3",
+               "-o", "StrictHostKeyChecking=accept-new"]
+    ssh = ["ssh", *options, "-p", str(port), destination]
+    scp = ["scp", *options, "-P", str(port)]
     workspace = config["remote_workspace"]
     q = shlex.quote
     environment = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}

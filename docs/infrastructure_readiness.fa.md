@@ -9,8 +9,8 @@
 - ۹۷ آزمون داده، نقش‌های کالیبراسیون، امتیازدهی، CAM++، انتقال ZIP، tracking و readiness گذشته‌اند. dry-run قرارداد ۴۵۲۹ فایل و دو fold را تأیید کرده است.
 - Vast CLI رسمی نسخهٔ ۱٫۶٫۰ با اجازهٔ کاربر توسط uv نصب شد و توکن `.env` برای اتصال واقعی استفاده شد. درخواست شروع instance `50079023` پاسخ «Required resources are currently unavailable, state change queued.» داد؛ بررسی بعدی `actual_status=exited`, `intended_status=stopped`, `cur_state=stopped` را نشان داد.
 - طبق تصمیم کاربر همان instance نگه داشته می‌شود؛ هیچ جایگزینی بررسی/اجاره و هیچ instance حذف نشده است.
-- احراز هویت و خواندن MLflow از سیستم محلی موفق بود. نام experiment مستقل این مرحله `iaaa2026-campp-infrastructure-20260907` است. experiment با ID برابر `1` ایجاد شد. اجرای نخست `03f4686ad2d246dcad861935c746e0b3` ثبت پارامترها و آرتیفکت‌ها را انجام داد، ولی بررسی دقیق دانلود snapshot خطا را تشخیص داد و run به‌صورت تأییدشده FAILED شد. نتیجهٔ بررسی اصلاح‌شده در `artifacts/infrastructure/mlflow_local_probe_zip/preflight_result.json` ثبت می‌شود؛ نبود این فایل به معنی انجام‌نشدن تأیید نهایی است.
-- SSH، استقرار واقعی، انتقال داده و token، نصب محیط GPU و probe از داخل 3090 **منتظر در دسترس‌شدن instance هستند**. گزارش نهایی `artifacts/infrastructure/readiness.json` باید تا آن زمان `blocked` باقی بماند.
+- احراز هویت و خواندن MLflow از سیستم محلی موفق بود. نام experiment مستقل این مرحله `iaaa2026-campp-infrastructure-20260907` است. experiment با ID برابر `1` ایجاد شد. اجرای نخست `03f4686ad2d246dcad861935c746e0b3` ثبت پارامترها و آرتیفکت‌ها را انجام داد، ولی بررسی دقیق دانلود snapshot خطا را تشخیص داد و run به‌صورت تأییدشده FAILED شد. بررسی اصلاح‌شده با run `cfb81b7b9bbd4720865780247c53a3e9` موفق و FINISHED شد: ۷ آرتیفکت، ۴۵ پارامتر، ۵ متریک و ۹ tag بازخوانی و تأیید شدند. نتیجه در `artifacts/infrastructure/mlflow_local_probe_zip/preflight_result.json` است.
+- در بررسی بعدی instance به حالت `running` رسید و SSH مستقیم تأیید شد. استقرار، انتقال داده و نصب محیط در حال انجام است؛ readiness تا پایان probeهای داخل سرور blocked می‌ماند.
 
 ## مدل و پروتکل
 
@@ -45,15 +45,15 @@ uv --cache-dir artifacts/tooling/uv-cache sync --locked --group ops --group eda
 .venv/Scripts/python.exe scripts/infra/vast_control.py start
 .venv/Scripts/python.exe scripts/infra/vast_control.py show
 .venv/Scripts/python.exe scripts/infra/prepare_transfer.py
-.venv/Scripts/python.exe scripts/infra/deploy_workspace.py inspect --identity-file C:/Users/AmirhosseinEsbati/.ssh/id_ed25519
-.venv/Scripts/python.exe scripts/infra/deploy_workspace.py deploy --identity-file C:/Users/AmirhosseinEsbati/.ssh/id_ed25519
-.venv/Scripts/python.exe scripts/infra/deploy_workspace.py bootstrap --identity-file C:/Users/AmirhosseinEsbati/.ssh/id_ed25519
-.venv/Scripts/python.exe scripts/infra/deploy_workspace.py upload-assets --identity-file C:/Users/AmirhosseinEsbati/.ssh/id_ed25519
-.venv/Scripts/python.exe scripts/infra/deploy_workspace.py verify --identity-file C:/Users/AmirhosseinEsbati/.ssh/id_ed25519
-.venv/Scripts/python.exe scripts/infra/deploy_workspace.py download-evidence --identity-file C:/Users/AmirhosseinEsbati/.ssh/id_ed25519
+.venv/Scripts/python.exe scripts/infra/deploy_workspace.py inspect --identity-file C:/Users/AmirhosseinEsbati/.ssh/id_rsa
+.venv/Scripts/python.exe scripts/infra/deploy_workspace.py deploy --identity-file C:/Users/AmirhosseinEsbati/.ssh/id_rsa
+.venv/Scripts/python.exe scripts/infra/deploy_workspace.py bootstrap --identity-file C:/Users/AmirhosseinEsbati/.ssh/id_rsa
+.venv/Scripts/python.exe scripts/infra/deploy_workspace.py upload-assets --identity-file C:/Users/AmirhosseinEsbati/.ssh/id_rsa
+.venv/Scripts/python.exe scripts/infra/deploy_workspace.py verify --identity-file C:/Users/AmirhosseinEsbati/.ssh/id_rsa
+.venv/Scripts/python.exe scripts/infra/deploy_workspace.py download-evidence --identity-file C:/Users/AmirhosseinEsbati/.ssh/id_rsa
 ```
 
-اولین SSH هنوز انجام نشده و تطبیق کلید حساب با کلید محلی پس از running بررسی می‌شود. در صورت خطای SSH، ابتدا `vast_control.py logs` خوانده می‌شود و علت تعیین می‌شود؛ کلید یا تنظیمات کورکورانه تغییر نمی‌کنند.
+SSH مستقیم با کلید RSA ثبت‌شدهٔ حساب موفق شد؛ hostname برابر `4593b1f57a8e`، Python سیستم `3.12.3`، GPU برابر RTX 3090 با ۲۴GiB و driver `580.95.05` مشاهده شدند. پراکسی SSH اتصال را بست و ED25519 در حساب ثبت نبود؛ بعد از خواندن لاگ و تطبیق کلیدهای عمومی، RSA موجود انتخاب شد. هیچ کلید جدیدی اضافه نشد. در صورت خطای SSH، ابتدا `vast_control.py logs` خوانده می‌شود و علت تعیین می‌شود؛ کلید یا تنظیمات کورکورانه تغییر نمی‌کنند.
 
 `upload-assets` فقط متادیتا، وزن عمومی، binding آزمایش جدید، ZIP خام و سه متغیر MLflow را انتقال می‌دهد. tokenهای Vast/Git روی سیستم محلی باقی می‌مانند. فایل `.env` سرور regular file با mode `600` است؛ انتقال رمزگذاری‌شده با SSH/SFTP انجام می‌شود. کاربر انتقال امن credentials لازم MLflow را صریحاً مجاز کرده است.
 
