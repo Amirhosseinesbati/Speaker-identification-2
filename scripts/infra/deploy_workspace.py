@@ -5,6 +5,7 @@ code must arrive through git, and this script has no training command.
 """
 from __future__ import annotations
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -16,9 +17,43 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def prefix_sha256(source: Path, length: int) -> str:
+    """Hash exactly the bytes already present on the remote upload target."""
+    if not isinstance(length, int) or isinstance(length, bool) or not 0 <= length <= source.stat().st_size:
+        raise ValueError("Remote upload length must lie within the local source file")
+    digest = hashlib.sha256()
+    remaining = length
+    with source.open("rb") as stream:
+        while remaining:
+            block = stream.read(min(1024 * 1024, remaining))
+            if not block:
+                raise ValueError("Local archive became shorter while checking its prefix")
+            digest.update(block)
+            remaining -= len(block)
+    return digest.hexdigest()
+
+
+def validate_raw_resume(source: Path, expected_bytes: int, expected_sha256: str, snapshot: dict) -> int:
+    """Resume only a matching prefix of the exact deployment archive."""
+    before = source.stat()
+    if not source.is_file() or source.is_symlink() or before.st_size != expected_bytes:
+        raise ValueError("Local raw.zip is not the regular archive of the deployment's expected size")
+    count = snapshot["size"]
+    if not isinstance(count, int) or isinstance(count, bool) or not 0 <= count <= expected_bytes:
+        raise ValueError("Remote raw.zip size is invalid or exceeds the local source")
+    if snapshot["sha256"] != prefix_sha256(source, count):
+        raise ValueError("Remote raw.zip does not match the local prefix; refusing corrupt resume")
+    if count == expected_bytes and snapshot["sha256"] != expected_sha256:
+        raise ValueError("Complete remote raw.zip does not match the deployment SHA256")
+    after = source.stat()
+    if (before.st_size, before.st_mtime_ns, before.st_ino) != (after.st_size, after.st_mtime_ns, after.st_ino):
+        raise ValueError("Local archive changed while validating resume")
+    return count
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["inspect", "deploy", "bootstrap", "upload-assets", "verify", "download-evidence"])
+    parser.add_argument("action", choices=["inspect", "deploy", "bootstrap", "upload-assets", "resume-raw", "verify", "download-evidence"])
     parser.add_argument("--identity-file", type=Path, required=True)
     args = parser.parse_args()
     config = json.loads((ROOT / "configs/infra/deployment.json").read_text())
@@ -114,6 +149,58 @@ def main():
         for source, target in assets:
             upload(source, workspace + "/" + target)
         print("Assets transferred. Run metadata/data verification from committed scripts before deleting any archive.")
+    elif args.action == "resume-raw":
+        # Call only after the previous writer has exited. This action never kills
+        # another transfer, removes a partial upload, or starts model execution.
+        source = ROOT / "data/raw.zip"
+        if config["archive_path"] != "data/incoming/raw.zip":
+            raise SystemExit("Resume is restricted to the fixed incoming raw.zip target")
+        target = workspace + "/data/incoming/raw.zip"
+        inspect_source = "\n".join([
+            "import hashlib,json,pathlib,stat,sys",
+            "root=pathlib.Path(sys.argv[1]).resolve(strict=True)",
+            "target=pathlib.Path(sys.argv[2])",
+            "assert target.is_absolute() and target.resolve().is_relative_to(root), 'Upload target escaped workspace'",
+            "assert target.parent.is_dir(), 'Incoming directory is missing'",
+            "assert not any(p.is_symlink() for p in (target,*target.parents)), 'Upload path contains a symlink'",
+            "if target.exists():",
+            "    before=target.lstat()",
+            "    assert stat.S_ISREG(before.st_mode), 'Upload target is not a regular file'",
+            "    with target.open('rb') as stream: digest=hashlib.file_digest(stream,'sha256').hexdigest()",
+            "    after=target.lstat()",
+            "    assert (before.st_size,before.st_mtime_ns,before.st_ino)==(after.st_size,after.st_mtime_ns,after.st_ino), 'Another writer changed raw.zip during hashing'",
+            "    result={'exists':True,'size':after.st_size,'sha256':digest,'mtime_ns':after.st_mtime_ns,'inode':after.st_ino}",
+            "else:",
+            "    result={'exists':False,'size':0,'sha256':hashlib.sha256(b'').hexdigest(),'mtime_ns':None,'inode':None}",
+            "print(json.dumps(result))",
+        ])
+
+        def inspect_raw():
+            result = remote(shlex.join([workspace + "/.venv/bin/python", "-c", inspect_source, workspace, target]), capture=True)
+            return json.loads(result.stdout)
+
+        snapshot = inspect_raw()
+        resumed_from = validate_raw_resume(source, config["archive_size_bytes"], config["archive_sha256"], snapshot)
+        print(json.dumps({"stage": "raw_resume_prefix_verified", "existing_bytes": resumed_from,
+                          "total_bytes": config["archive_size_bytes"]}), flush=True)
+        if resumed_from < config["archive_size_bytes"]:
+            # Relative local path avoids Windows drive-colon parsing and spaces.
+            # Both paths are fixed controlled paths; SFTP receives its own quoted
+            # batch language directly through stdin, never through a local shell.
+            batch = 'reput "data/raw.zip" "' + target + '"\n'
+            subprocess.run(["sftp", *options, "-P", str(port), "-b", "-", "-N", destination],
+                           input=batch, cwd=ROOT, text=True, check=True)
+            completed = inspect_raw()
+        else:
+            completed = snapshot
+        if completed["size"] != config["archive_size_bytes"] or completed["sha256"] != config["archive_sha256"]:
+            raise SystemExit("Resumed archive failed final size/SHA256 verification; extraction is blocked")
+        report = {"status": "passed", "training_started": False, "resumed_from_bytes": resumed_from,
+                  "archive_size_bytes": completed["size"], "archive_sha256": completed["sha256"],
+                  "archive_path": config["archive_path"], "archive_deleted": False,
+                  "next_step": "Run verify for complete ZIP CRC, extraction and raw-file verification"}
+        (ROOT / "artifacts/infrastructure/raw_upload.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+        print(json.dumps(report, indent=2))
     elif args.action == "verify":
         import csv
         from datetime import datetime, timezone
@@ -157,8 +244,14 @@ def main():
     else:
         output = ROOT / "artifacts/infrastructure/server_evidence"
         output.mkdir(parents=True, exist_ok=True)
-        for name in ["instance.json", "data_readiness.json", "runtime_readiness.json", "campp_probe.json", "readiness.json"]:
+        for name in ["instance.json", "metadata_readiness.json", "data_readiness.json", "runtime_readiness.json", "campp_probe.json", "readiness.json"]:
             subprocess.run([*scp, destination + ":" + workspace + "/artifacts/infrastructure/" + name, str(output / name)], check=True)
+        spool = json.loads((ROOT / "artifacts/infrastructure/remote_probe_path.json").read_text())["spool"]
+        if (not isinstance(spool, str) or not spool.startswith("artifacts/infrastructure/mlflow_probe/")
+                or "\\" in spool or any(part in {"", ".", ".."} for part in spool.split("/"))):
+            raise SystemExit("Recorded remote MLflow spool is outside the expected infrastructure directory")
+        subprocess.run([*scp, destination + ":" + workspace + "/" + spool + "/preflight_result.json",
+                        str(output / "mlflow_preflight_result.json")], check=True)
         print("Server evidence downloaded; training was not started.")
 
 
