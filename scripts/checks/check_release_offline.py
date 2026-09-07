@@ -10,6 +10,7 @@ import argparse
 import csv
 from datetime import datetime, timezone
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -162,24 +163,49 @@ def main():
         expected = {name: labels[int(index)] for name, index in zip(saved["audio_file"], saved["probabilities"].argmax(axis=1))}
         if any(row["speaker_id"] != expected[row["audio_file"]] for row in predictions):
             raise ValueError("CLI and probability argmax disagree")
-        parity = []
+        parity, cached_vectors = [], []
         for name, vector in zip(saved["audio_file"], saved["embedding"]):
             cache = args.source_cache / (Path(str(name)).stem + ".npz")
             with np.load(cache, allow_pickle=False) as cached:
                 reference = cached["embedding"]
             difference = float(np.max(np.abs(vector - reference)))
-            cosine = float(vector @ reference) if np.any(reference) else None
-            if difference > 2e-4 or (cosine is not None and cosine < .99999):
+            cosine = float(vector.astype(np.float64) @ reference.astype(np.float64)) if np.any(reference) else None
+            # CPU and CUDA convolution backends need not be bit-identical.
+            # Keep a conservative numerical guard AND require identical actual
+            # decisions below; production CUDA is checked independently.
+            if difference > .002 or (cosine is not None and cosine < .9999):
                 raise ValueError(f"CPU release extraction differs from B002 cache: {name}: {difference}")
             parity.append({"audio_file": str(name), "maximum_absolute_difference": difference, "cosine": cosine})
+            cached_vectors.append(reference.copy())
+        spec = importlib.util.spec_from_file_location("_portable_scoring_qa", release / "speaker_id/inference/scoring.py")
+        scoring = importlib.util.module_from_spec(spec)
+        previous_bytecode = sys.dont_write_bytecode
+        sys.dont_write_bytecode = True
+        try:
+            spec.loader.exec_module(scoring)
+        finally:
+            sys.dont_write_bytecode = previous_bytecode
+        with np.load(release / "assets/gallery.npz", allow_pickle=False) as arrays:
+            gallery = {name: arrays[name] for name in arrays.files}
+        calibration = json.loads((release / "assets/calibration.json").read_text())
+        cached_vectors = np.asarray(cached_vectors)
+        cached_probabilities = scoring.score_embeddings(cached_vectors, np.any(cached_vectors, axis=1), gallery, calibration)
+        if not np.array_equal(cached_probabilities.argmax(axis=1), saved["probabilities"].argmax(axis=1)):
+            raise ValueError("CPU audio inference and CUDA cached embeddings produce different speaker decisions")
+        probability_drift = float(np.max(np.abs(cached_probabilities - saved["probabilities"])))
     report = {**json.loads(evidence.read_text()), "verified_at": datetime.now(timezone.utc).isoformat(),
               "release_dir": str(release), "qa_directory": str(run_dir),
               "submission_sha256": sha256(release / "submission.py"), "csv_sha256": sha256(output),
               "cli_probability_argmax_parity": True, "input_coverage_exact": True,
+              "cpu_vs_cuda_cache_decisions_exact": True,
+              "cpu_vs_cuda_cache_max_probability_difference": probability_drift,
+              "cross_device_tolerance": {"maximum_absolute_embedding_difference": .002, "minimum_embedding_cosine": .9999,
+                                         "speaker_decisions_must_match": True, "bit_identical_embeddings_required": False},
               "cases": [{"audio_file": item["row"]["audio_file"], "cases": item["cases"]} for item in examples],
               "embedding_parity_with_server_B002": parity,
               "limitations": ["Host Python dependencies; organizer evaluator image is not supplied.",
                               "Network blocking covers Python socket APIs, not an OS network namespace.",
+                              "CPU and CUDA numerical drift is recorded; matched decisions apply to these examples, not every future input.",
                               "Representative forward/CSV checks, not a leaderboard score or held-out quality estimate."]}
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")

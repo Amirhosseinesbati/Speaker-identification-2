@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "experiment_code": "S004",
+  "run_name": "S004-campp-public-adapted-fixed-role-scoring",
+  "readiness_config": "configs/train/campp_coverage.json",
+  "output_root": "artifacts/training",
+  "calibration_protocol": "fixed_inner_holdout",
+  "threshold_candidates": 201,
+  "probability_temperature": 0.05,
+  "sources": {
+    "public": {
+      "config": "configs/train/campp_coverage.json",
+      "run": "artifacts/training/B002_20260907T150724Z_9b11fe4b",
+      "parent_run_id": "9b5ef17e61d24b9ba438128bf7f24a7a"
+    },
+    "adapted": {
+      "config": "configs/train/campp_finetune_fp32.json",
+      "run": "artifacts/training/F003_20260907T155811Z_9b46953e",
+      "parent_run_id": "12543424acdb4e47ab570ddc4656be0f",
+      "signature": "65b3878e22f294a2d5be59cb87abc9458123b70a5dbec63c2ab50ca75eff1bd1",
+      "git_commit": "c9595f200ef34f8e6c87613cb31707d72626ca06",
+      "export_manifest_paths": [
+        "artifacts/exports/F003_20260907T155811Z_9b46953e.complete.manifest.json",
+        "artifacts/infrastructure/F003_verification/server_export_manifest.json"
+      ],
+      "export_manifest_sha256": "ad14eb6989de8ee5c86a9395af1ba96bae4b683e054fbfe6212e7a1599889ff9",
+      "completed_steps": 600,
+      "folds": {
+        "0": {
+          "child_run_id": "76b2b3897814452aaac03e7a00569088",
+          "checkpoint_sha256": "e32462a9078be0d2c7973636f94c8975658fa9ad50105832e711787702df0976"
+        },
+        "1": {
+          "child_run_id": "3689ef686d464f8fb92e31e26b546724",
+          "checkpoint_sha256": "db5365fe39f2829b48b14a6b7ad6940cb94c37b7b9e7548c993fc298c3c0539b"
+        }
+      }
+    }
+  },
+  "recipes": [
+    {"id": "S004a", "source": "public", "method": "prototype", "unknown_weights": [0.0], "margin_weights": [0.0]},
+    {"id": "S004b", "source": "adapted", "method": "prototype", "unknown_weights": [0.0], "margin_weights": [0.0]},
+    {"id": "S004c", "source": "public", "method": "max_reference", "unknown_weights": [0.0, 0.25, 0.5, 0.75, 1.0], "margin_weights": [0.0, 0.5]},
+    {"id": "S004d", "source": "adapted", "method": "max_reference", "unknown_weights": [0.0, 0.25, 0.5, 0.75, 1.0], "margin_weights": [0.0, 0.5]}
+  ],
+  "hypothesis": "Measure whether identical richer fixed-role reference scoring helps the completed F003 adapted encoder relative to the public B002 encoder. Both zero-weight prototype controls must first reproduce all source fold and OOF predictions exactly.",
+  "selection_policy": "Four fixed paired ablations, with no outer selection among recipes. Each threshold and coefficient is selected using only the original disjoint inner calibration holdout. Both source controls must pass before either max-reference recipe runs. No encoder fitting, new embedding extraction or adapted group crossfit is allowed.",
+  "limitations": [
+    "This fixed-role ablation differs from the broader frozen-only group-excluded crossfit protocol used by S002f; it does not establish a matched comparison to S002f.",
+    "Adapted caches remain bound to their own outer-fold final checkpoints; their shared NPZ signature alone cannot identify the encoder.",
+    "Repeated development-fold comparisons are not an unbiased final test or a hidden leaderboard score.",
+    "Unknown identities are not labeled, and content-group disjointness does not establish recording-session disjointness.",
+    "All 4529 original files and 447 labels remain in evaluation, including 89 zero-signal files with unknown fallback."
+  ]
+}
