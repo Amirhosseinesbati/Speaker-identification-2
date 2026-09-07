@@ -9,7 +9,7 @@ if [ "$#" -ne 1 ]; then
     exit 2
 fi
 case "$1" in
-    configs/train/campp_scoring_suite.json)
+    configs/train/campp_scoring_suite.json|configs/train/campp_coverage_scoring.json)
         CONFIG_PATH=$1
         ENTRYPOINT=scripts/score_frozen.py
         EXECUTION_FLAG=--execute

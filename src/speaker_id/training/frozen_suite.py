@@ -21,7 +21,10 @@ from speaker_id.training.runner import write_csv, write_json
 
 
 def validate_suite(suite: dict):
-    if (suite.get("schema_version") != 1 or not isinstance(suite.get("recipes"), list)
+    if (not isinstance(suite, dict) or suite.get("schema_version") != 1
+            or not isinstance(suite.get("experiment_code"), str)
+            or not re.fullmatch(r"S[0-9]{3}", suite["experiment_code"])
+            or not isinstance(suite.get("recipes"), list)
             or not suite["recipes"] or suite.get("output_root") != "artifacts/training"
             or type(suite.get("threshold_candidates")) is not int or suite["threshold_candidates"] < 2
             or not isinstance(suite.get("probability_temperature"), (int, float))
@@ -29,21 +32,46 @@ def validate_suite(suite: dict):
         raise ValueError("Invalid scoring suite configuration")
     identifiers = set()
     for recipe in suite["recipes"]:
+        if not isinstance(recipe, dict):
+            raise ValueError("Each scoring recipe must be an object")
         identifier = recipe.get("id", "")
-        if (not re.fullmatch(r"S[0-9]{3}[a-z]", identifier) or identifier in identifiers
+        if (not isinstance(identifier, str)
+                or not re.fullmatch(suite["experiment_code"] + r"[a-z]", identifier) or identifier in identifiers
                 or recipe.get("method") not in {"prototype", "max_reference"}
                 or recipe.get("calibration_protocol", "fixed_inner_holdout") not in {"fixed_inner_holdout", "leave_content_group_out"}):
             raise ValueError("Invalid or duplicate recipe ID, method, or calibration protocol")
         identifiers.add(identifier)
         for key in ("unknown_weights", "margin_weights"):
             values = recipe.get(key)
-            if (not isinstance(values, list) or not values or len(set(values)) != len(values)
-                    or any(type(v) not in {float, int} or not np.isfinite(v) or v < 0 for v in values)):
+            if (not isinstance(values, list) or not values
+                    or any(type(v) not in {float, int} or not np.isfinite(v) or v < 0 for v in values)
+                    or len(set(values)) != len(values)):
                 raise ValueError("Coefficient grids must contain distinct finite nonnegative numbers")
+    # Run the complete source-reproduction control before any comparison recipe.
+    control = suite["recipes"][0]
+    if (control["id"] != suite["experiment_code"] + "a" or control["method"] != "prototype"
+            or control.get("calibration_protocol", "fixed_inner_holdout") != "fixed_inner_holdout"
+            or control["unknown_weights"] != [0.0] or control["margin_weights"] != [0.0]):
+        raise ValueError("The first recipe must be the suite's fixed-role zero-weight prototype reproduction control")
+
+
+def verify_source_predictions(source: Path, outer: int, predictions: list[dict]) -> dict:
+    """A named control cannot silently pass with changed or duplicated predictions."""
+    path = source / f"fold_{outer}" / "predictions.csv"
+    original_rows = read_csv(path)
+    original = {row["audio_file"]: row["speaker_id"] for row in original_rows}
+    observed = {row["audio_file"]: row["speaker_id"] for row in predictions}
+    if (not original_rows or len(original) != len(original_rows) or len(observed) != len(predictions)
+            or observed != original):
+        raise ValueError("Frozen source control does not reproduce exactly; comparisons are invalid")
+    return {"exact_prediction_reproduction": True, "files": len(original),
+            "source_prediction_sha256": file_sha256(path)}
 
 
 def validated_cache(root: Path, source: Path, contract: dict, expected_run_id: str):
     """Allow code evolution outside feature extraction, but never silent cache reuse."""
+    if contract["config"].get("mode") != "frozen_baseline":
+        raise ValueError("Scoring suites require a public frozen baseline contract")
     state = json.loads((source / "experiment_state.json").read_text())
     original = json.loads((source / "resolved_config.json").read_text())
     if state["status"] != "complete" or state["parent_run_id"] != expected_run_id:
@@ -134,7 +162,7 @@ def execute_suite(root: Path, suite_path: Path, contract: dict, binding_path: Pa
               "input_paths": {"suite_config": suite_path, "source_config": source / "resolved_config.json",
                               "source_report": source / "experiment_report.json",
                               **{name: root / contract["config"][name] for name in ("manifest", "folds", "roles", "label_map", "model_config")}}}
-    parent = DurableMLflowRun.prepare(spool_dir=output / "tracking", run_name="S001-campp-reference-comparisons",
+    parent = DurableMLflowRun.prepare(spool_dir=output / "tracking", run_name=suite["experiment_code"] + "-campp-reference-comparisons",
                                      config={"suite": suite, "contract_signature": contract["signature"]}, **common)
     child = None
     started = time.monotonic()
@@ -184,10 +212,8 @@ def execute_suite(root: Path, suite_path: Path, contract: dict, binding_path: Pa
                 references = [contract["manifest"][i] for i in evaluation]
                 predictions = [{"audio_file": row["audio_file"], "speaker_id": labels[int(pred)]}
                                for row, pred in zip(references, probabilities.argmax(axis=1))]
-                if recipe["id"] == "S001a":
-                    original = {row["audio_file"]: row["speaker_id"] for row in read_csv(source / f"fold_{outer}" / "predictions.csv")}
-                    if {row["audio_file"]: row["speaker_id"] for row in predictions} != original:
-                        raise ValueError("B001 control does not reproduce exactly; comparisons are invalid")
+                reproduction = (verify_source_predictions(source, outer, predictions)
+                                if recipe["id"] == suite["experiment_code"] + "a" else None)
                 metrics = score_predictions(references, predictions, labels)
                 support_arrays = {key: value for key, value in scores["reference_counts"].items() if isinstance(value, np.ndarray)}
                 support_metadata = {key: value for key, value in scores["reference_counts"].items() if key not in support_arrays}
@@ -197,6 +223,7 @@ def execute_suite(root: Path, suite_path: Path, contract: dict, binding_path: Pa
                     support_metadata["array_shapes"] = {key: list(value.shape) for key, value in support_arrays.items()}
                     support_metadata["support_arrays_artifact"] = "reference_support.npz"
                 report = {"recipe": recipe, "outer_fold": outer, "outer": metrics, "calibration": calibration,
+                          "source_reproduction": reproduction,
                           "threshold": calibration["threshold"], "threshold_axis_label": "Calibrated reference gate score",
                           "reference_counts": support_metadata, "provenance": scores["provenance"],
                           "inner_query_files": len(query), "probability_semantics": "normalized scores, not calibrated posteriors"}

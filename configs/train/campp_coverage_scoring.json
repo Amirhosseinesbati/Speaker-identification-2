@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "experiment_code": "S002",
+  "baseline_config": "configs/train/campp_coverage.json",
+  "source_run": "artifacts/training/B002_20260907T150724Z_9b11fe4b",
+  "source_parent_run_id": "9b5ef17e61d24b9ba438128bf7f24a7a",
+  "output_root": "artifacts/training",
+  "threshold_candidates": 201,
+  "probability_temperature": 0.05,
+  "hypothesis": "Combine independently measured full-utterance audio coverage and S001f scoring by applying the identical fixed scoring grid to the completed public frozen B002 cache, after exact B002 prediction reproduction.",
+  "selection_policy": "Exactly two recipes are preregistered before S002 execution. S002a must reproduce B002 before S002f runs. All coefficients and thresholds use inner queries only; crossfit excludes the whole query content group. Repeated outer comparisons are development estimates, not an unbiased final test.",
+  "recipes": [
+    {
+      "id": "S002a",
+      "method": "prototype",
+      "unknown_weights": [
+        0.0
+      ],
+      "margin_weights": [
+        0.0
+      ],
+      "purpose": "Exact B002 full-utterance frozen baseline reproduction control"
+    },
+    {
+      "id": "S002f",
+      "method": "max_reference",
+      "calibration_protocol": "leave_content_group_out",
+      "unknown_weights": [
+        0.0,
+        0.25,
+        0.5,
+        0.75,
+        1.0
+      ],
+      "margin_weights": [
+        0.0,
+        0.5
+      ],
+      "purpose": "Apply the unchanged S001f max-reference, unknown-evidence and group-excluded crossfit grid to B002 full-utterance embeddings"
+    }
+  ]
+}
