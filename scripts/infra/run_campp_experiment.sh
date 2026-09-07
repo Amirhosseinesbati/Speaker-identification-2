@@ -5,10 +5,20 @@ set -euo pipefail
 
 readonly PROJECT_ROOT=/workspace/Speaker-identification-2
 if [ "$#" -ne 1 ]; then
-    printf '%s\n' 'Usage: run_campp_experiment.sh <allowlisted configs/train/...json>' >&2
+    printf '%s\n' 'Usage: run_campp_experiment.sh <allowlisted configuration.json>' >&2
     exit 2
 fi
 case "$1" in
+    configs/package/campp_s002f.json)
+        CONFIG_PATH=$1
+        ENTRYPOINT=scripts/package_frozen.py
+        EXECUTION_FLAG=--execute
+        ;;
+    configs/train/campp_dualview_scoring.json)
+        CONFIG_PATH=$1
+        ENTRYPOINT=scripts/score_fusion.py
+        EXECUTION_FLAG=--execute
+        ;;
     configs/train/campp_scoring_suite.json|configs/train/campp_coverage_scoring.json)
         CONFIG_PATH=$1
         ENTRYPOINT=scripts/score_frozen.py

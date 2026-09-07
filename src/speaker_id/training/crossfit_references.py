@@ -17,7 +17,7 @@ def _truth(value) -> bool:
 
 
 def crossfit_scores(embeddings, valid, manifest: list[dict], folds: list[dict],
-                    outer: int, method: str = "prototype", classes: int = 446) -> dict:
+                    outer: int | None, method: str = "prototype", classes: int = 446) -> dict:
     """Score inner group-held-out queries and outer rows with all training refs.
 
     Input rows in ``embeddings`` and ``valid`` follow ``manifest`` order. ``folds``
@@ -35,7 +35,9 @@ def crossfit_scores(embeddings, valid, manifest: list[dict], folds: list[dict],
     Returns NumPy score/index arrays plus counts and provenance. Calibration
     known queries require >=2 eligible reference groups for their identity.
     Unknown calibration requires >=2 eligible unknown groups, so no empty-cohort
-    score needs to be fabricated.
+    score needs to be fabricated. ``outer=None`` explicitly enrolls all eligible
+    training data and returns no outer rows; it is final calibration, not an OOF
+    evaluation. Existing fold/group assignments remain unmodified.
     """
     if method not in {"prototype", "max_reference"}:
         raise ValueError("method must be prototype or max_reference")
@@ -73,10 +75,11 @@ def crossfit_scores(embeddings, valid, manifest: list[dict], folds: list[dict],
         raise ValueError("A content group crosses outer fold boundaries")
     assigned = np.asarray(assigned)
     groups = np.asarray(groups, dtype=object)
-    if outer not in assigned or not np.any(assigned != outer):
+    if outer is not None and (outer not in assigned or not np.any(assigned != outer)):
         raise ValueError("Requested outer fold must have both training and evaluation rows")
-    references = np.flatnonzero((assigned != outer) & np.asarray(eligible) & mask)
-    outer_indices = np.flatnonzero(assigned == outer)
+    training = np.ones(len(assigned), dtype=bool) if outer is None else assigned != outer
+    references = np.flatnonzero(training & np.asarray(eligible) & mask)
+    outer_indices = np.asarray([], dtype=np.int64) if outer is None else np.flatnonzero(assigned == outer)
     if not len(references):
         raise ValueError("No eligible outer-training references")
 
@@ -184,7 +187,8 @@ def crossfit_scores(embeddings, valid, manifest: list[dict], folds: list[dict],
         },
         "provenance": {
             "protocol": "frozen_public_embedding_leave_content_group_out_v1",
-            "outer_fold": int(outer), "method": method,
+            "outer_fold": None if outer is None else int(outer), "method": method,
+            "scope": "all_training_final_calibration" if outer is None else "outer_fold_development",
             "reference_indices": [int(index) for index in references],
             "reference_groups": sorted(set(groups[references])),
             "outer_labels_accessed": False, "threshold_or_coefficient_fitted": False,
@@ -195,3 +199,14 @@ def crossfit_scores(embeddings, valid, manifest: list[dict], folds: list[dict],
             "support_caveat": "Inner known queries have their group removed; full outer-training support is restored for outer evaluation",
         },
     }
+
+
+def all_training_crossfit_scores(embeddings, valid, manifest: list[dict], folds: list[dict],
+                                method: str = "max_reference", classes: int = 446) -> dict:
+    """Final scorer calibration using all training references, without a test fold.
+
+    The public encoder must remain frozen. Each calibration query still excludes
+    every member of its content group. No synthetic sample or fold is introduced.
+    """
+    return crossfit_scores(embeddings, valid, manifest, folds, outer=None,
+                           method=method, classes=classes)
