@@ -4,7 +4,7 @@
 
 EDA محاسباتی، شامل بررسی موج، مدل‌های عمومی ثابت، پرچم‌های بازبینی و قرارداد اعتبارسنجی/کالیبراسیون، پایان یافته است. [گزارش نهایی](reports/eda/final.html) و [جمع‌بندی تصمیم‌ها و محدودیت‌ها](docs/eda_final.fa.md) آماده‌اند. بازبینی شنیداری انسانی و احراز هویت/session انجام نشده‌اند.
 
-مرحلهٔ فعلی آماده‌سازی زیرساخت CAM++ است. instance `50079023` روی Vast اکنون running است؛ SSH مستقیم RSA، محیط قفل‌شدهٔ ۸۲پکیجی، چهار فایل متادیتا، ارتباط واقعی MLflow از سرور، بررسی اولیهٔ CUDA/dependencyها و forward واقعی CAM++ روی 3090 تأیید شده‌اند. Supervisor ثبت شده و STOPPED است. دریافت آرشیو رسمی، تأیید کامل داده و runtime/readiness نهایی هنوز باقی‌اند. **آموزش آغاز نشده و آمادگی کامل هنوز اعلام نشده است.** جزئیات در [گزارش زیرساخت](docs/infrastructure_readiness.fa.md) ثبت شده‌اند.
+**زیرساخت CAM++ آماده است و منتظر دستور صریح کاربر برای شروع است؛ آموزش آغاز نشده است.** instance `50079023` فعال، محیط قفل‌شده نصب، کل داده تأیید، runtime و CAM++ روی 3090 موفق و Supervisor در وضعیت STOPPED است. اولین بررسی یکپارچه هر ۱۲ شرط readiness را گذراند و مانع صفر داشت. جزئیات در [گزارش زیرساخت](docs/infrastructure_readiness.fa.md) آمده‌اند؛ Git SHA و run متناظر آخرین استقرار از شواهد نسخهٔ جاری خوانده می‌شوند.
 
 ## محیط قابل بازتولید
 
@@ -94,15 +94,13 @@ uv --cache-dir artifacts/tooling/uv-cache run --locked --group eda python -m htt
 
 [راهبرد آموزش](docs/training_strategy.fa.md) و [runbook زیرساخت و وضعیت واقعی](docs/infrastructure_readiness.fa.md) مرجع مرحلهٔ جاری‌اند. `configs/model/campp.json` مدل اصلی، `configs/train/campp_baseline.json` خط مبنای B001 و `configs/train/campp_finetune.json` گزینهٔ F001 را تعریف می‌کنند.
 
-`python scripts/train.py` فقط قراردادها را بررسی می‌کند. شروع واقعی به پیام صریح کاربر، فلگ اجرا، readiness موفق خود instance و roundtrip زندهٔ MLflow وابسته است. کد فقط از Git و متادیتا/وزن با SSH منتقل می‌شوند. دریافت دادهٔ خام اکنون مستقیماً از منبع رسمی ارائه‌شده توسط کاربر انجام می‌شود. گزارش‌های EDA و دادهٔ processed عمداً در مخزن عمومی نیستند؛ لینک‌های آن‌ها با نسخهٔ محلی کامل کار می‌کنند.
+`python scripts/train.py` فقط قراردادها را بررسی می‌کند. کد فقط از Git و متادیتا/وزن با SSH منتقل می‌شوند. دادهٔ خام از منبع رسمی دریافت و کاملاً بررسی شد: CRC هر ۴۵۳۰ عضو، SHA تمام ۴۵۲۹ صوت و labels بایت‌به‌بایت، مجموعاً ۱۶٬۸۶۱٬۶۸۵٬۱۷۴ بایت، موفق بودند. ZIP رسمی و انتقال‌های ناقص سرور پاک شده‌اند؛ ZIP اصلی محلی حفظ شده است. داده و گزارش‌های ریز EDA در مخزن عمومی نیستند.
 
-MLflow از experiment جدید `iaaa2026-campp-infrastructure-20260907` با ID برابر `1` استفاده می‌کند. probe سرور `fa2f0afa3db6479b919544d527f0796a` با وضعیت FINISHED، هفت آرتیفکت با SHA و بازخوانی ۴۵ پارامتر، پنج متریک و نه tag را تأیید کرده است. run محلی تاریخی `cfb81b7b9bbd4720865780247c53a3e9` نیز حفظ شده است. ZIP متادیتا پس از تأیید چهار فایل روی سرور حذف شده؛ فایل credentials سرور mode برابر `600` دارد.
+MLflow از experiment جدید `iaaa2026-campp-infrastructure-20260907` با ID برابر `1` استفاده می‌کند. نخستین probe یکپارچهٔ موفق `32aabecc021146feae737f808d39ced6` با وضعیت FINISHED، ده artifact با SHA، ۴۵ پارامتر، هشت متریک و نه tag را بازخوانی کرد؛ گزارش‌های کامل `checks/data.json`، `checks/runtime.json` و `checks/campp.json` نیز ثبت شدند. محل تحویل شواهد به‌روز `artifacts/infrastructure/server_evidence/readiness.json` و `mlflow_preflight_result.json` در همان پوشه است؛ run دقیق آخرین استقرار از آن‌ها خوانده می‌شود.
 
-probe اولیهٔ CUDA، `pip check` و نسخه‌های core موفق بوده، اما decode داده در آن صرف‌نظر شده و جای بررسی runtime نهایی باقی است. probe واقعی CAM++ روی صوت ۳٫۱۵۷۳ثانیه‌ای در ۱٫۷۳ ثانیه، بردار واحد ۵۱۲بعدی و logits با شکل `2×446` تولید کرده؛ هیچ backward یا optimizer step اجرا نشده است.
+runtime نهایی شامل WAV/MP3 واقعی، CUDA و dependency check موفق است. CAM++ در ۱٫۳۷ ثانیه بردار واحد ۵۱۲بعدی و logits با شکل `2×446` تولید کرد؛ backward و optimizer step صفر بودند. ۱۰۵ آزمون کامل و بررسی انتهابه‌انتهای probe نیز گذشته‌اند. بازبینی پس از commit با `deploy_workspace.py verify --archive-source official_original` انجام می‌شود؛ نصب یا انتقال دوبارهٔ داده لازم نیست.
 
-آرشیو رسمی ۹٬۷۶۴٬۹۵۰٬۶۰۳ بایتی با ریشهٔ `training/` از طریق aria2 دریافت می‌شود. SHA آن از هویت دانلود ثبت می‌شود؛ صحت محتوا با manifest قبلیِ تمام صوت‌ها و SHA بایت‌به‌بایت labels محلی سنجیده خواهد شد. SHA مربوط به ZIP بازبسته‌بندی‌شدهٔ محلی تغییر نمی‌کند. فرمان بررسی این مسیر `deploy_workspace.py verify --archive-source official_original` است؛ جزئیات و کلید SSH در runbook آمده‌اند. انتقال‌های کند قبلی متوقف و بخش‌های ناقص تا تأیید کامل داده حفظ شده‌اند.
-
-سرویس Supervisor برای `speaker_id_campp_b001` با `autostart=false` و `autorestart=false` ثبت شده و **STOPPED** است؛ شروع نشده است. **فقط پس از آمادگی نهایی و دستور صریح کاربر**، فرمان شروع روی سرور چنین خواهد بود:
+سرویس Supervisor برای `speaker_id_campp_b001` با `autostart=false` و `autorestart=false` ثبت شده و **STOPPED** است؛ شروع نشده است. **فقط پس از دستور صریح کاربر**، فرمان شروع روی سرور چنین خواهد بود:
 
 ```bash
 supervisorctl start speaker_id_campp_b001

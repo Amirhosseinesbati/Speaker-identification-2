@@ -1,17 +1,18 @@
 # آماده‌سازی CAM++ و زیرساخت آموزش
 
-تاریخ: ۲۰۲۶-۰۹-۰۷. **هیچ آموزش، optimizer step یا استخراج سراسری embedding در این مرحله اجرا نشده است.**
+تاریخ: ۲۰۲۶-۰۹-۰۷. **زیرساخت آماده است و منتظر دستور صریح کاربر برای شروع است. هیچ آموزش، optimizer step یا استخراج سراسری embedding اجرا نشده است.**
 
 ## وضعیت واقعی
 
-- مدل اصلی CAM++ است. forward واقعی روی RTX 3090 و یک صوت شناخته‌شدهٔ ۳٫۱۵۷۳ثانیه‌ای در ۱٫۷۳ ثانیه موفق شد: بردار واحد ۵۱۲بعدی و logits با شکل `2×446` تأیید شدند؛ backward و optimizer step هر دو صفر بودند. گزارش `artifacts/infrastructure/campp_probe_network_diagnostic.json` این probe محدود را ثبت می‌کند.
+- اولین بررسی یکپارچه در `2026-09-07T13:12:30Z` روی commit `0bc18fe` به `readiness=ready` رسید: هر ۱۲ بررسی موفق و مانع صفر بود. Git SHA و run دقیق آخرین استقرار از شواهد نسخهٔ جاری خوانده می‌شوند؛ پس از هر commit بررسی مجدد انجام می‌شود.
+- مدل اصلی CAM++ است. forward واقعی نهایی روی RTX 3090 در ۱٫۳۷ ثانیه موفق شد: بردار واحد ۵۱۲بعدی و logits با شکل `2×446`؛ backward و optimizer step هر دو صفر بودند.
 - ZIP محلی به‌طور کامل بررسی شد: CRC هر ۴۵۳۰ عضو، SHA تمام ۴۵۲۹ صوت و labels، و تمام فایل‌های استخراج‌شده تطبیق داشتند. ZIP اصلی حفظ شد؛ گزارش `artifacts/infrastructure/data_local_verification.json` تنها شاهد بررسی محلی است.
-- آزمون‌های داده، نقش‌های کالیبراسیون، امتیازدهی، CAM++، انتقال ZIP، tracking و readiness گذشته‌اند. dry-run قرارداد ۴۵۲۹ فایل و دو fold را تأیید کرده است.
+- ۱۰۵ آزمون کامل و بررسی انتهابه‌انتهای probe با backend آزمایشی گذشته‌اند. dry-run قرارداد ۴۵۲۹ فایل و دو fold را تأیید کرده است.
 - instance `50079023` اکنون **running** است و SSH مستقیم با کلید RSA موجود تأیید شده است. کمبود ظرفیت اولیه برطرف شده؛ همان instance استفاده می‌شود و هیچ جایگزینی اجاره یا instance دیگری حذف نشده است.
-- محیط train قفل‌شده با **۸۲ پکیج** روی سرور نصب شده است. بررسی CUDA، `pip check` و نسخه‌های core در `artifacts/infrastructure/runtime_bootstrap_diagnostic.json` موفق بوده؛ این بررسی با صرف‌نظر از decode داده انجام شده و runtime نهاییِ متصل به کل داده هنوز باقی است.
+- محیط train قفل‌شده با **۸۲ پکیج** نصب است. runtime نهایی شامل CUDA، `pip check`، نسخه‌های core و decode ترکیب‌های واقعی WAV/MP3 موجود در داده موفق شد.
 - هر چهار فایل متادیتا روی سرور با SHA تأیید شده‌اند و ZIP متادیتای منتقل‌شده، پس از تأیید نصب، از سرور حذف شده است. credentials لازم MLflow منتقل شده و فایل `.env` سرور mode برابر `600` دارد.
-- experiment مستقل `iaaa2026-campp-infrastructure-20260907` با ID برابر `1` فعال است. probe ارتباط و ثبت MLflow **روی خود سرور** با run `fa2f0afa3db6479b919544d527f0796a` به وضعیت FINISHED رسیده: ۷ آرتیفکت با SHA، ۴۵ پارامتر، ۵ متریک و ۹ tag بازخوانی و تأیید شده‌اند.
-- دریافت مستقیم آرشیو رسمی با aria2 و هشت اتصال آغاز شده است. پایان دانلود، بررسی کامل آرشیو و تمام فایل‌های خام، runtime نهایی و جمع‌بندی readiness هنوز تأیید نشده‌اند. **آمادگی کامل برای شروع آموزش هنوز اعلام نشده است.**
+- experiment مستقل `iaaa2026-campp-infrastructure-20260907` با ID برابر `1` فعال است. نخستین probe یکپارچهٔ موفق `32aabecc021146feae737f808d39ced6` با وضعیت FINISHED، ۱۰ artifact با SHA، ۴۵ پارامتر، ۸ متریک و ۹ tag را بازخوانی کرد؛ گزارش‌های `checks/data.json`، `checks/runtime.json` و `checks/campp.json` داخل همان run هستند.
+- آرشیو رسمی کامل دریافت و محتوایش تأیید شد: CRC هر ۴۵۳۰ عضو، SHA/اندازهٔ تمام ۴۵۲۹ صوت و labels بایت‌به‌بایت، مجموعاً ۱۶٬۸۶۱٬۶۸۵٬۱۷۴ بایت در ۱۳۱٫۸۹ ثانیه. ZIP رسمی و باقی‌مانده‌های انتقال قبلی سپس حذف شدند؛ دانلود قدیمی خاتمه یافت و نبود فرایندش بررسی شد. ZIP اصلی محلی حفظ شده و حدود ۱۰۳GiB فضای آزاد روی سرور مشاهده شد.
 - سرویس Supervisor با نام `speaker_id_campp_b001` از طریق `scripts/infra/install_supervisor.sh` ثبت شده و وضعیت **STOPPED** آن تأیید شده است. `autostart=false` و `autorestart=false` هستند؛ سرویس شروع نشده و منتظر دستور صریح کاربر می‌ماند.
 
 ## مدل و پروتکل
@@ -38,7 +39,7 @@ SHA256 5b1a88b6f8d85826fabef804779c3372b42f3af21457fa48bd5c097c0686b2de
 
 ## چرخهٔ استقرار و بررسی
 
-نصب محیط، متادیتا و Supervisor انجام شده است. پس از پایان دانلود رسمی، SHA فایل دریافت‌شده از گزارش `artifacts/infrastructure/competition_download.json` در ورودی `official_original` فایل `configs/infra/archive_sources.json` ثبت و تغییر config از مسیر Git به سرور منتقل می‌شود. سپس از ریشهٔ workspace محلی:
+نصب نخستین انجام شده است: محیط با `bootstrap_server.sh`، دریافت رسمی با `download_competition.sh` و ثبت سرویس متوقف با `install_supervisor.sh`. هویت دانلود در `configs/infra/archive_sources.json` ثبت است. برای بررسی عادی پس از commit/push، نصب یا بارگذاری دوبارهٔ داده لازم نیست؛ از ریشهٔ workspace محلی:
 
 ```powershell
 .venv/Scripts/python.exe scripts/infra/vast_control.py show
@@ -51,9 +52,9 @@ SSH مستقیم با کلید RSA ثبت‌شدهٔ حساب موفق شد؛ ho
 
 `upload-assets` فقط متادیتا، وزن عمومی، binding آزمایش جدید، ZIP خام و سه متغیر MLflow را انتقال می‌دهد. tokenهای Vast/Git روی سیستم محلی باقی می‌مانند. فایل `.env` سرور regular file با mode `600` است؛ انتقال رمزگذاری‌شده با SSH/SFTP انجام می‌شود. کاربر انتقال امن credentials لازم MLflow را صریحاً مجاز کرده است.
 
-انتقال SFTP مستقیم و پراکسی برای ZIP خام هر دو حدود ۳۰ تا ۴۰KB/s بودند؛ خواندن دیسک محلی حدود ۶۷٫۹MB/s بود. انتقال‌های قدیمی متوقف شدند و بخش‌های ناقصشان فعلاً حفظ شده‌اند. با URL رسمی ارائه‌شده توسط کاربر، ابزار aria2 نصب و اسکریپت نسخه‌دار `scripts/infra/download_competition.sh` روی سرور اجرا شد. حذف باقی‌مانده‌های انتقال قبلی فقط پس از تأیید کامل داده انجام خواهد شد و هنوز انجام نشده است.
+انتقال SFTP مستقیم و پراکسی هر دو حدود ۳۰ تا ۴۰KB/s بودند؛ دریافت از URL رسمی با aria2 و میانگین حدود ۳۲MiB/s کامل شد. باقی‌مانده‌های انتقال‌های قبلی پس از تأیید کامل داده حذف شدند.
 
-آرشیو [منبع رسمی مسابقه](https://iaaa-contest-speaker.s3.ir-thr-at1.arvanstorage.ir/iaaa-contest-speaker.zip?versionId=) اندازهٔ ۹٬۷۶۴٬۹۵۰٬۶۰۳ بایت و ریشهٔ `training/` دارد. این بسته‌بندی با `data/raw.zip` محلی متفاوت است؛ SHA آرشیو canonical در `configs/infra/deployment.json` تغییر نمی‌کند. SHA آرشیو رسمی از خود دانلود اندازه‌گیری و برای شناسایی همان فایل ثبت می‌شود؛ SHA منتشرشدهٔ مستقلی از برگزارکننده در اختیار نداریم. اعتبار محتوای دریافت‌شده با CRC همهٔ اعضا، SHA و اندازهٔ ازپیش‌ثبت‌شدهٔ تمام ۴۵۲۹ صوت در manifest و تطابق بایت‌به‌بایت `labels.csv` با SHA نسخهٔ محلی احراز خواهد شد. برابری SHA دو ZIP معیار این تطابق نیست.
+آرشیو [منبع رسمی مسابقه](https://iaaa-contest-speaker.s3.ir-thr-at1.arvanstorage.ir/iaaa-contest-speaker.zip?versionId=) اندازهٔ ۹٬۷۶۴٬۹۵۰٬۶۰۳ بایت و ریشهٔ `training/` داشت. SHA اندازه‌گیری‌شدهٔ دانلود `6ca989a80fa36030ebe7fb3f17e5299be5adf8221617e08eeb6956ded68bc9c4` است؛ checksum منتشرشدهٔ مستقلی از برگزارکننده در اختیار نداریم. صحت محتوا با manifest قبلی تمام صوت‌ها و SHA بایت‌به‌بایت labels محلی تأیید شد. بسته‌بندی با ZIP محلی متفاوت است و SHA canonical در `configs/infra/deployment.json` بدون تغییر مانده است.
 
 `verify` تمام مراحل زیر را اجرا می‌کند و با اولین شکست متوقف می‌شود:
 
@@ -70,7 +71,7 @@ Binding experiment در `artifacts/infrastructure/mlflow_state.json` ذخیره 
 
 هر run شامل config حل‌شده، پارامترها، seed، fingerprint ورودی‌ها، نسخه‌های محیط، Git SHA، snapshot قطعی تمام `src` و manifest آن، گزارش JSON/Markdown، متریک‌ها و آرتیفکت‌های مربوط است. اجراهای مدل parent و fold child دارند؛ prediction، احتمال ۴۴۷کلاسه، gallery، خطاهای هر کلاس و slice، نمودارها و checkpoint/resume ثبت می‌شوند. صف محلی رخدادها در قطعی ارتباط حفظ می‌شود و تحویل تأییدنشده موفق گزارش نمی‌شود.
 
-run محلی تاریخی `cfb81b7b9bbd4720865780247c53a3e9` با وضعیت FINISHED، دسترسی سیستم محلی را تأیید کرده است؛ نتیجه در `artifacts/infrastructure/mlflow_local_probe_zip/preflight_result.json` قرار دارد. probe ارتباط سرور نیز اکنون با run `fa2f0afa3db6479b919544d527f0796a` موفق شده است. مرحلهٔ `verify` شواهد نهایی کد، مدل، داده و MLflow را با قرارداد فعلی تطبیق خواهد داد. هیچ نمرهٔ مسابقه یا loss آموزشی برای probe ساختگی ثبت نمی‌شود.
+run محلی `cfb81b7b9bbd4720865780247c53a3e9` و probe ارتباط سرور `fa2f0afa3db6479b919544d527f0796a` به‌عنوان سابقه حفظ شده‌اند. مرجع آخرین Git SHA و run متناظر، گزارش‌های شواهد است. محل تحویل نسخهٔ محلی آن‌ها `artifacts/infrastructure/server_evidence/readiness.json` و `artifacts/infrastructure/server_evidence/mlflow_preflight_result.json` است؛ نتیجهٔ آخرین `download-evidence` مرجع به‌روز این فایل‌هاست. شناسهٔ اولین probe یکپارچه، جای شناسهٔ آخرین استقرار را نمی‌گیرد.
 
 ## فرمان آیندهٔ شروع
 
