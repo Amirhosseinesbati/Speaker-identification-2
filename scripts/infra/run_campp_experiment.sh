@@ -14,7 +14,7 @@ case "$1" in
         ENTRYPOINT=scripts/score_frozen.py
         EXECUTION_FLAG=--execute
         ;;
-    configs/train/campp_coverage.json|configs/train/campp_finetune.json|configs/train/campp_finetune_warmup.json)
+    configs/train/campp_coverage.json|configs/train/campp_finetune.json|configs/train/campp_finetune_warmup.json|configs/train/campp_finetune_fp32.json)
         CONFIG_PATH=$1
         ENTRYPOINT=scripts/train.py
         EXECUTION_FLAG=--execute-training
