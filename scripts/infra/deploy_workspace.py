@@ -291,7 +291,7 @@ def main():
             else:
                 remote(f"set -eu; cd {q(workspace)}; export VAST_INSTANCE_ID={config['instance_id']}; " + invocation)
         (ROOT / "artifacts/infrastructure/remote_probe_path.json").write_text(json.dumps({"spool": spool}))
-        print("All server readiness checks passed. No training has started.")
+        print("All server readiness checks passed. This verification did not start training.")
     else:
         output = ROOT / "artifacts/infrastructure/server_evidence"
         output.mkdir(parents=True, exist_ok=True)
@@ -303,7 +303,7 @@ def main():
             raise SystemExit("Recorded remote MLflow spool is outside the expected infrastructure directory")
         subprocess.run([*scp, destination + ":" + workspace + "/" + spool + "/preflight_result.json",
                         str(output / "mlflow_preflight_result.json")], check=True)
-        print("Server evidence downloaded; training was not started.")
+        print("Server evidence downloaded; this download did not start training.")
 
 
 if __name__ == "__main__":

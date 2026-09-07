@@ -4,7 +4,7 @@
 
 EDA محاسباتی، شامل بررسی موج، مدل‌های عمومی ثابت، پرچم‌های بازبینی و قرارداد اعتبارسنجی/کالیبراسیون، پایان یافته است. [گزارش نهایی](reports/eda/final.html) و [جمع‌بندی تصمیم‌ها و محدودیت‌ها](docs/eda_final.fa.md) آماده‌اند. بازبینی شنیداری انسانی و احراز هویت/session انجام نشده‌اند.
 
-**زیرساخت CAM++ آماده است و منتظر دستور صریح کاربر برای شروع است؛ آموزش آغاز نشده است.** instance `50079023` فعال، محیط قفل‌شده نصب، کل داده تأیید، runtime و CAM++ روی 3090 موفق و Supervisor در وضعیت STOPPED است. اولین بررسی یکپارچه هر ۱۲ شرط readiness را گذراند و مانع صفر داشت. جزئیات در [گزارش زیرساخت](docs/infrastructure_readiness.fa.md) آمده‌اند؛ Git SHA و run متناظر آخرین استقرار از شواهد نسخهٔ جاری خوانده می‌شوند.
+**پروژه از مرحلهٔ آماده‌سازی عبور کرده و آزمایش‌های CAM++ با مجوز کاربر روی RTX 3090 اجرا شده‌اند.** کد و طراحی آزمایش‌ها محلی انجام می‌شوند و از مسیر commit، push و pull به instance `50079023` می‌رسند. راهبرد مقایسه‌های جدید در [پروتکل دور چهارم](docs/campp_improvement_round4.fa.md) ثبت شده است. وضعیت جاری، شناسه‌های واقعی run و مسیر شواهد در `artifacts/infrastructure/model_improvement_state.json` و گزارش‌های محلی `reports/training/` نگهداری می‌شوند؛ این خروجی‌ها وارد Git نمی‌شوند. [گزارش زیرساخت](docs/infrastructure_readiness.fa.md) سابقهٔ آماده‌سازی اولیه است.
 
 ## محیط قابل بازتولید
 
@@ -37,7 +37,7 @@ uv --cache-dir artifacts/tooling/uv-cache run --locked --group eda python script
 
 ## خروجی‌ها
 
-خروجی اصلی فعلی `reports/eda/final.html` است. نسخهٔ اول و گزارش موج برای سابقه حفظ شده‌اند. وزن‌های عمومی مورد استفاده با hash کنترل‌شده در `artifacts/models` همین پروژه قرار دارند؛ [محیط واقعی ممیزی مدل‌ها و روش بازسازی](docs/model_audit_runtime.fa.md) جدا از محیط لیدربرد مستند شده است.
+خروجی نهایی EDA در `reports/eda/final.html`، گزارش‌های آموزش در `reports/training/`، خروجی هر آزمایش در `artifacts/training/<run>/` و بسته‌های مستقل در `artifacts/releases/<release>/` قرار دارند. نسخه‌های قبلی برای مقایسه و بازتولید حفظ می‌شوند. وزن‌های عمومی با hash کنترل‌شده در `artifacts/models` قرار دارند؛ [محیط واقعی ممیزی مدل‌ها و روش بازسازی](docs/model_audit_runtime.fa.md) جدا از محیط آموزش و لیدربرد مستند شده است.
 
 یافته‌ها و تصمیم‌های فعلی در [نتیجهٔ EDA نسخهٔ ۱](docs/eda_decisions.fa.md) و پرسش‌های مشخص دربارهٔ کیفیت داده در [متن آمادهٔ پیگیری](docs/data_quality_questions.fa.md) ثبت شده‌اند؛ هیچ پیامی برای برگزارکننده ارسال نشده است.
 
@@ -88,22 +88,22 @@ uv --cache-dir artifacts/tooling/uv-cache run --locked --group eda python -m htt
 
 ## نظم پروژه
 
-منطق مشترک در `src/speaker_id`، ورودی‌های اجرا در `scripts`، آزمون‌ها در `tests` و تصمیم‌ها در `docs` نگهداری می‌شوند. دادهٔ اصلی، cache، محیط پایتون، کلیدها و خروجی‌های بزرگ در Git قرار نمی‌گیرند. هر مرحله خروجی مشخص و قابل بازتولید دارد؛ کد CAM++ و recipeهای B001/F001 اضافه شده‌اند؛ وزن عمومی در مسیر ignored محلی آماده است و هیچ وزنی روی دادهٔ مسابقه آموزش ندیده است.
+منطق مشترک در `src/speaker_id`، ورودی‌های اجرا در `scripts`، آزمون‌ها در `tests` و تصمیم‌ها در `docs` نگهداری می‌شوند. دادهٔ اصلی، cache، محیط پایتون، کلیدها و خروجی‌های بزرگ در Git قرار نمی‌گیرند. هر آزمایش config، خروجی و هویت مستقل دارد. وزن عمومی و checkpointهای آموزش‌دیده جدا نگهداری می‌شوند؛ cache مدل عمومی، مدل آموزش‌دیده و مدل ۱۹۲بعدی قابل جایگزینی با یکدیگر نیستند.
 
-## CAM++ و آماده‌سازی آموزش
+## CAM++ و اجرای آزمایش‌ها
 
-[راهبرد آموزش](docs/training_strategy.fa.md) و [runbook زیرساخت و وضعیت واقعی](docs/infrastructure_readiness.fa.md) مرجع مرحلهٔ جاری‌اند. `configs/model/campp.json` مدل اصلی، `configs/train/campp_baseline.json` خط مبنای B001 و `configs/train/campp_finetune.json` گزینهٔ F001 را تعریف می‌کنند.
+[راهبرد اولیهٔ آموزش](docs/training_strategy.fa.md)، [سابقهٔ زیرساخت](docs/infrastructure_readiness.fa.md) و [پروتکل دور چهارم](docs/campp_improvement_round4.fa.md) تصمیم‌های هر مرحله را ثبت می‌کنند. `configs/model/campp.json` مدل عمومی ۵۱۲بعدی و `configs/model/campp_advanced.json` نامزد عمومی ۱۹۲بعدی را تعریف می‌کنند. config هر آموزش و مقایسه در `configs/train/` و config ساخت بسته در `configs/package/` است.
 
 `python scripts/train.py` فقط قراردادها را بررسی می‌کند. کد فقط از Git و متادیتا/وزن با SSH منتقل می‌شوند. دادهٔ خام از منبع رسمی دریافت و کاملاً بررسی شد: CRC هر ۴۵۳۰ عضو، SHA تمام ۴۵۲۹ صوت و labels بایت‌به‌بایت، مجموعاً ۱۶٬۸۶۱٬۶۸۵٬۱۷۴ بایت، موفق بودند. ZIP رسمی و انتقال‌های ناقص سرور پاک شده‌اند؛ ZIP اصلی محلی حفظ شده است. داده و گزارش‌های ریز EDA در مخزن عمومی نیستند.
 
-MLflow از experiment جدید `iaaa2026-campp-infrastructure-20260907` با ID برابر `1` استفاده می‌کند. نخستین probe یکپارچهٔ موفق `32aabecc021146feae737f808d39ced6` با وضعیت FINISHED، ده artifact با SHA، ۴۵ پارامتر، هشت متریک و نه tag را بازخوانی کرد؛ گزارش‌های کامل `checks/data.json`، `checks/runtime.json` و `checks/campp.json` نیز ثبت شدند. محل تحویل شواهد به‌روز `artifacts/infrastructure/server_evidence/readiness.json` و `mlflow_preflight_result.json` در همان پوشه است؛ run دقیق آخرین استقرار از آن‌ها خوانده می‌شود.
+MLflow از experiment جداگانهٔ `iaaa2026-campp-infrastructure-20260907` با ID برابر `1` استفاده می‌کند. هر اجرا config، پارامترها، متریک‌ها، گزارش‌ها و snapshot کامل `src` را ثبت می‌کند. پیش از محاسبات، مالکیت experiment، دسترسی زنده و رفت‌وبرگشت آرتیفکت‌ها بررسی می‌شوند. شواهد جاری آمادگی در `artifacts/infrastructure/server_evidence/` و نسخه‌های حفظ‌شدهٔ هر مرحله در پوشه‌های جداگانهٔ زیرساخت قرار دارند؛ شناسهٔ دقیق probe و commit باید از همان شواهد خوانده شود.
 
-runtime نهایی شامل WAV/MP3 واقعی، CUDA و dependency check موفق است. CAM++ در ۱٫۳۷ ثانیه بردار واحد ۵۱۲بعدی و logits با شکل `2×446` تولید کرد؛ backward و optimizer step صفر بودند. ۱۰۵ آزمون کامل و بررسی انتهابه‌انتهای probe نیز گذشته‌اند. بازبینی پس از commit با `deploy_workspace.py verify --archive-source official_original` انجام می‌شود؛ نصب یا انتقال دوبارهٔ داده لازم نیست.
+کنترل runtime شامل WAV/MP3 واقعی، CUDA، وابستگی‌ها و CAM++ است. پس از استقرار commit جدید، `deploy_workspace.py verify --training-config configs/train/campp_coverage.json --archive-source official_original` شواهد آمادگی متناظر را تولید می‌کند. گزارش آزمون‌های هر تغییر جدا ثبت می‌شود؛ تعداد آزمون یا وضعیت یک سرویس قدیمی جایگزین بررسی نسخهٔ جاری نیست.
 
-سرویس Supervisor برای `speaker_id_campp_b001` با `autostart=false` و `autorestart=false` ثبت شده و **STOPPED** است؛ شروع نشده است. **فقط پس از دستور صریح کاربر**، فرمان شروع روی سرور چنین خواهد بود:
+سرویس‌های Supervisor با `autostart=false` و `autorestart=false` تعریف شده‌اند. پس از استقرار، readiness و تأیید شرط علمی هر آزمایش، سرویس همان آزمایش دستی شروع می‌شود؛ اجرای مرحله‌ها به‌صورت خودکار زنجیر نشده است. برای مشاهدهٔ وضعیت واقعی روی سرور:
 
 ```bash
-supervisorctl start speaker_id_campp_b001
+supervisorctl status
 ```
 
-این فرمان اجرا نشده است. wrapper نسخه‌دار، credentials و شناسهٔ instance را بارگذاری می‌کند و پیش از شروع محاسبات، شواهد readiness و دسترسی زندهٔ MLflow دوباره بررسی می‌شوند.
+wrapper نسخه‌دار، credentials و شناسهٔ instance را بارگذاری می‌کند و پیش از شروع محاسبات، شواهد readiness و دسترسی زندهٔ MLflow را دوباره بررسی می‌کند. OOF توسعه‌ای، امتیاز کالیبراسیون نهایی و نتیجهٔ لیدربرد سه مقدار متفاوت‌اند و در گزارش‌ها جدا نام‌گذاری می‌شوند. تحویل بسته مستلزم بررسی یکپارچگی و اجرای آفلاین مستقل است؛ ارسال لیدربرد را کاربر انجام می‌دهد.

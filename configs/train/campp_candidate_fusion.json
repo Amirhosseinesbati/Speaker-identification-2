@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "experiment_code": "S008",
+  "run_name": "S008-campp-public512-advanced192-paired-reference",
+  "readiness_config": "configs/train/campp_coverage.json",
+  "output_root": "artifacts/training",
+  "source_public": {
+    "baseline_config": "configs/train/campp_coverage.json",
+    "source_run": "artifacts/training/B002_20260907T150724Z_9b11fe4b",
+    "source_parent_run_id": "9b5ef17e61d24b9ba438128bf7f24a7a",
+    "control_run": "artifacts/training/S002_20260907T153007Z_ec71bae8",
+    "control_parent_run_id": "7f72cd37eee249589d405d8e4bc63e61",
+    "control_recipe_id": "S002f"
+  },
+  "alphas": [
+    0.0,
+    0.25,
+    0.5,
+    0.75,
+    1.0
+  ],
+  "alpha_tie_order": [
+    0.0,
+    1.0,
+    0.25,
+    0.5,
+    0.75
+  ],
+  "unknown_weights": [
+    0.0,
+    0.25,
+    0.5,
+    0.75,
+    1.0
+  ],
+  "margin_weights": [
+    0.0,
+    0.5
+  ],
+  "threshold_candidates": 201,
+  "probability_temperature": 0.05,
+  "selection_policy": "Select alpha and gate on group-excluded inner queries only; exact S002f/S007b endpoint controls precede mixed outer evaluation.",
+  "execution_policy": "Manual dispatch after completed S006 and S007 only if S006d, S006f and S007b all remain below pooled OOF Macro-F1 0.965; no automatic chaining.",
+  "source_advanced": {
+    "run": "artifacts/training/S007_20260907T224739Z_9be25eef",
+    "parent_run_id": "8ec9bae7ce504c82a38b9f367ff0c795",
+    "source_signature": "57c3b9b55597c575175a2153b4500d942ad896a8ac4211cfc17e0ec9e48b0d36",
+    "git_commit": "900426ccb06fd513c19a7db9ff55cd62de6d144e",
+    "children": {
+      "S007b": "e213361c82d24889b42d28d837d8f7cf",
+      "S007a": "f3551e9212304dd1bdfcbbb93e92a90d"
+    },
+    "export_manifest_paths": [
+      "artifacts/exports/S007_20260907T224739Z_9be25eef.complete.manifest.json",
+      "artifacts/infrastructure/S007_verification/server_export_manifest.json"
+    ],
+    "export_manifest_sha256": "c1fa440187e1e47dfdc20e95406cb5a5cce28256cacd526d9839b8f6330420b8"
+  }
+}
