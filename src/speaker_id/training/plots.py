@@ -13,7 +13,7 @@ def evaluation_plots(output: Path, report: dict, curve: list[dict]) -> list[Path
     fig, ax = plt.subplots(figsize=(8, 4), constrained_layout=True)
     ax.plot([r["threshold"] for r in curve], [r["inner_macro_f1_447"] for r in curve], color="#166a77")
     ax.axvline(report["threshold"], color="#b45c37", linestyle="--", label="Selected on inner queries")
-    ax.set(xlabel="Global maximum-cosine rejection threshold", ylabel="Inner Macro-F1 (447 labels)", title="CAM++ calibration; outer labels withheld")
+    ax.set(xlabel=report.get("threshold_axis_label", "Global maximum-cosine rejection threshold"), ylabel="Inner Macro-F1 (447 labels)", title="CAM++ calibration; outer labels withheld")
     ax.legend()
     path = output / "calibration_curve.png"
     fig.savefig(path, dpi=160)

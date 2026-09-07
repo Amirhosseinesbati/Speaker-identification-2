@@ -17,6 +17,35 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def resolve_training_config(root: Path, action: str, requested: Path | None,
+                            default_path: str) -> str:
+    """Validate a verify-only override without rewriting deployment identity."""
+    if requested is None:
+        return default_path
+    if action != "verify":
+        raise ValueError("--training-config is supported only by the verify action")
+    root = root.resolve(strict=True)
+    requested = Path(requested)
+    if ".." in requested.parts:
+        raise ValueError("Training config cannot contain parent traversal components")
+    candidate = requested if requested.is_absolute() else root / requested
+    absolute = Path(os.path.abspath(candidate))
+    allowed = root / "configs/train"
+    if not absolute.is_relative_to(allowed):
+        raise ValueError("Training config must be inside this workspace's configs/train directory")
+    for part in (absolute, *absolute.parents):
+        if part == root:
+            break
+        if part.is_symlink() or (hasattr(part, "is_junction") and part.is_junction()):
+            raise ValueError("Training config paths cannot contain symlinks or junctions")
+    resolved = absolute.resolve(strict=True)
+    if not resolved.is_relative_to(allowed) or not resolved.is_file() or resolved.suffix.lower() != ".json":
+        raise ValueError("Training config must be an existing JSON file inside configs/train")
+    if not isinstance(json.loads(resolved.read_text(encoding="utf-8")), dict):
+        raise ValueError("Training config JSON must contain an object")
+    return resolved.relative_to(root).as_posix()
+
+
 def prefix_sha256(source: Path, length: int) -> str:
     """Hash exactly the bytes already present on the remote upload target."""
     if not isinstance(length, int) or isinstance(length, bool) or not 0 <= length <= source.stat().st_size:
@@ -57,8 +86,14 @@ def main():
     parser.add_argument("--identity-file", type=Path, required=True)
     parser.add_argument("--archive-source", choices=["local_upload", "official_original"], default="local_upload",
                         help="Select the explicitly pinned ZIP container for full data verification")
+    parser.add_argument("--training-config", type=Path,
+                        help="Verify only: existing configs/train/*.json training contract; deployment metadata stays unchanged")
     args = parser.parse_args()
     config = json.loads((ROOT / "configs/infra/deployment.json").read_text())
+    try:
+        training_config = resolve_training_config(ROOT, args.action, args.training_config, config["training_config"])
+    except (ValueError, OSError) as error:
+        parser.error(str(error))
     subprocess.run([sys.executable, str(ROOT / "scripts/infra/vast_control.py"), "show"], check=True)
     instance = json.loads((ROOT / "artifacts/infrastructure/vast_instance.json").read_text())
     if instance["id"] != config["instance_id"] or instance["actual_status"] != "running":
@@ -223,13 +258,13 @@ def main():
             [".venv/bin/python", "scripts/infra/install_metadata.py", "--archive", "data/incoming/data_metadata.zip", "--expected-archive-sha256", metadata_identity["archive_sha256"], "--delete-archive-after-verification"],
             [".venv/bin/python", "scripts/infra/verify_extract_data.py", "--archive", archive_config["archive_path"], "--expected-archive-sha256", archive_config["archive_sha256"], *archive_options, "--delete-archive-after-verification"],
             [".venv/bin/python", "scripts/infra/preflight_runtime.py", "--require-cuda", "--expected-gpu", "RTX3090", "--min-free-disk-gb", "10"],
-            [".venv/bin/python", "scripts/checks/probe_campp.py", "--audio", "data/raw/" + audio, "--device", "cuda", "--config", config["training_config"]],
-            [".venv/bin/python", "scripts/infra/with_project_env.py", ".venv/bin/python", "scripts/checks/probe_mlflow.py", "--experiment-name", config["mlflow_experiment_name"], "--spool-dir", spool, "--config", config["training_config"],
+            [".venv/bin/python", "scripts/checks/probe_campp.py", "--audio", "data/raw/" + audio, "--device", "cuda", "--config", training_config],
+            [".venv/bin/python", "scripts/infra/with_project_env.py", ".venv/bin/python", "scripts/checks/probe_mlflow.py", "--experiment-name", config["mlflow_experiment_name"], "--spool-dir", spool, "--config", training_config,
              "--fingerprint", "model_config=configs/model/campp.json", "--fingerprint", "manifest=data/processed/eda_v1/audio_manifest.csv", "--fingerprint", "folds=data/processed/eda_v1/folds.csv", "--fingerprint", "roles=data/processed/eda_v1/calibration_roles.csv", "--fingerprint", "label_map=data/processed/eda_v1/label_map.json", "--fingerprint", "weights=artifacts/models/campp/campplus_voxceleb.bin",
              "--evidence-report", "data=artifacts/infrastructure/data_readiness.json",
              "--evidence-report", "runtime=artifacts/infrastructure/runtime_readiness.json",
              "--evidence-report", "campp=artifacts/infrastructure/campp_probe.json"],
-            [".venv/bin/python", "scripts/infra/check_readiness.py", "--config", config["training_config"], "--mlflow-report", spool + "/preflight_result.json"],
+            [".venv/bin/python", "scripts/infra/check_readiness.py", "--config", training_config, "--mlflow-report", spool + "/preflight_result.json"],
         ]
         for index, command in enumerate(commands):
             invocation = shlex.join(command)

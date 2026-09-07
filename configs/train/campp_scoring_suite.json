@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "experiment_code": "S001",
+  "baseline_config": "configs/train/campp_baseline.json",
+  "source_run": "artifacts/training/B001_20260907T135057Z_42600432",
+  "source_parent_run_id": "3eeaa0c32ba9484ab77a863225925b11",
+  "output_root": "artifacts/training",
+  "threshold_candidates": 201,
+  "probability_temperature": 0.05,
+  "hypothesis": "Separate reference aggregation, known margin, and permitted unknown-reference evidence while keeping public CAM++ embeddings and outer folds fixed.",
+  "selection_policy": "All coefficients and thresholds selected on inner queries only. Six recipes declared before execution; outer results are development comparisons, not an unbiased final test. Crossfit variants use a public frozen encoder only and exclude entire query content groups from references.",
+  "recipes": [
+    {"id": "S001a", "method": "prototype", "unknown_weights": [0.0], "margin_weights": [0.0], "purpose": "Exact B001 reproduction control"},
+    {"id": "S001b", "method": "max_reference", "unknown_weights": [0.0], "margin_weights": [0.0], "purpose": "Preserve multiple recording references instead of averaging them"},
+    {"id": "S001c", "method": "prototype", "unknown_weights": [0.0], "margin_weights": [0.0, 0.25, 0.5, 1.0], "purpose": "Measure top-two known ambiguity"},
+    {"id": "S001d", "method": "max_reference", "unknown_weights": [0.0, 0.25, 0.5, 0.75, 1.0], "margin_weights": [0.0, 0.5], "purpose": "Use individually retained unknown development references as negative evidence; never one pooled unknown identity"},
+    {"id": "S001e", "method": "prototype", "calibration_protocol": "leave_content_group_out", "unknown_weights": [0.0], "margin_weights": [0.0], "purpose": "Recover all outer-training known reference support through group-excluded crossfit calibration"},
+    {"id": "S001f", "method": "max_reference", "calibration_protocol": "leave_content_group_out", "unknown_weights": [0.0, 0.25, 0.5, 0.75, 1.0], "margin_weights": [0.0, 0.5], "purpose": "Combine full outer-training known and unknown reference pools with query-group exclusion"}
+  ]
+}
