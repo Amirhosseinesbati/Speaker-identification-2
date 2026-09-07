@@ -11,6 +11,7 @@ import unittest
 import zipfile
 
 from speaker_id.infrastructure.data import DataVerificationError, sha256_file, verify_extract_data
+from speaker_id.infrastructure.readiness import ReadinessError, validate_archive_source
 
 
 class InfrastructureDataTests(unittest.TestCase):
@@ -33,17 +34,19 @@ class InfrastructureDataTests(unittest.TestCase):
     def tearDown(self):
         self.temporary.cleanup()
 
-    def write_archive(self, *, audio=None, labels=None, extra=None):
+    def write_archive(self, *, audio=None, labels=None, extra=None, prefix="raw", labels_bytes=None):
         label_stream = io.StringIO(newline="")
         writer = csv.writer(label_stream)
         writer.writerow(["speaker_id", "audio_file"])
         for name, speaker in (labels or self.labels).items():
             writer.writerow([speaker, name])
         with zipfile.ZipFile(self.archive, "w", compression=zipfile.ZIP_STORED) as zipped:
-            zipped.writestr("raw/", b"")
+            if prefix:
+                zipped.writestr(prefix + "/", b"")
+            parent = prefix + "/" if prefix else ""
             for name, payload in (audio or self.audio).items():
-                zipped.writestr("raw/" + name, payload)
-            zipped.writestr("raw/labels.csv", label_stream.getvalue().encode())
+                zipped.writestr(parent + name, payload)
+            zipped.writestr(parent + "labels.csv", labels_bytes if labels_bytes is not None else label_stream.getvalue().encode())
             if extra is not None:
                 zipped.writestr(*extra)
         return sha256_file(self.archive)
@@ -171,6 +174,101 @@ class InfrastructureDataTests(unittest.TestCase):
             self.run_verifier(delete=True)
         self.assertEqual(unrelated.read_text(), "user notes")
         self.assertTrue(self.archive.exists())
+
+    def test_explicit_training_root_matches_identical_payload_and_exact_labels(self):
+        self.write_archive(prefix="training")
+        with zipfile.ZipFile(self.archive) as zipped:
+            labels_hash = hashlib.sha256(zipped.read("training/labels.csv")).hexdigest()
+        before_size = self.archive.stat().st_size
+        result = self.run_verifier(delete=True, archive_prefix="training",
+                                   archive_source_id="official_original", expected_labels_sha256=labels_hash)
+        self.assertTrue(result["archive_deleted"])
+        self.assertEqual(result["archive_prefix"], "training")
+        self.assertEqual(result["archive_source_id"], "official_original")
+        self.assertEqual(result["archive_size_bytes"], before_size)
+        self.assertTrue(result["labels_byte_sha256_verified"])
+        self.assertEqual(result["labels_sha256"], labels_hash)
+        self.assertEqual(result["archive_crc_verified_members"], 3)
+        for name, payload in self.audio.items():
+            self.assertEqual((self.root / "data/raw" / name).read_bytes(), payload)
+
+    def test_default_policy_does_not_implicitly_accept_training_root(self):
+        self.write_archive(prefix="training")
+        with self.assertRaisesRegex(DataVerificationError, "Unexpected ZIP directory"):
+            self.run_verifier(delete=True)
+        self.assertTrue(self.archive.exists())
+        self.assertFalse((self.root / "data/raw").exists())
+
+    def test_explicit_prefix_rejects_other_roots_and_flat_members(self):
+        for prefix in ("raw", "other", ""):
+            with self.subTest(prefix=prefix):
+                self.write_archive(prefix=prefix)
+                with self.assertRaises(DataVerificationError):
+                    self.run_verifier(delete=True, archive_prefix="training")
+                self.assertTrue(self.archive.exists())
+                self.assertFalse((self.root / "data/raw").exists())
+
+    def test_explicit_prefix_still_rejects_traversal_and_nested_members(self):
+        for name in ("training/../escape", "training/nested/one.mp3", "one.mp3", "raw/two.mp3"):
+            with self.subTest(name=name):
+                self.write_archive(prefix="training", extra=(name, b"unexpected"))
+                with self.assertRaises(DataVerificationError):
+                    self.run_verifier(delete=True, archive_prefix="training")
+                self.assertTrue(self.archive.exists())
+                self.assertFalse((self.root / "data/raw").exists())
+
+    def test_explicit_prefix_itself_cannot_contain_path_components(self):
+        self.write_archive(prefix="training")
+        for prefix in ("../training", "/training", "training/nested", "training/", ""):
+            with self.subTest(prefix=prefix):
+                with self.assertRaises(DataVerificationError):
+                    self.run_verifier(delete=True, archive_prefix=prefix)
+                self.assertTrue(self.archive.exists())
+
+    def test_byte_changed_labels_fail_even_when_mapping_is_identical(self):
+        self.write_archive(prefix="training")
+        with zipfile.ZipFile(self.archive) as zipped:
+            original = zipped.read("training/labels.csv")
+        original_hash = hashlib.sha256(original).hexdigest()
+        changed = original.replace(b"\r\n", b"\n")
+        self.assertNotEqual(original, changed)
+        self.write_archive(prefix="training", labels_bytes=changed)
+        with self.assertRaisesRegex(DataVerificationError, "original CSV bytes"):
+            self.run_verifier(delete=True, archive_prefix="training", expected_labels_sha256=original_hash)
+        self.assertTrue(self.archive.exists())
+        self.assertFalse((self.root / "data/raw").exists())
+
+    def test_official_source_readiness_binds_every_container_identity_field(self):
+        self.write_archive(prefix="training")
+        with zipfile.ZipFile(self.archive) as zipped:
+            labels_hash = hashlib.sha256(zipped.read("training/labels.csv")).hexdigest()
+        result = self.run_verifier(delete=True, archive_prefix="training",
+                                   archive_source_id="official_original", expected_labels_sha256=labels_hash)
+        config = self.root / "configs/infra/archive_sources.json"
+        config.parent.mkdir(parents=True)
+        source = {"archive_path": "data/incoming/raw.zip", "archive_size_bytes": result["archive_size_bytes"],
+                  "archive_sha256": result["archive_sha256"], "member_prefix": "training", "labels_sha256": labels_hash}
+        config.write_text(json.dumps({"official_original": source}))
+        self.assertEqual(validate_archive_source(self.root, result)["archive_source_id"], "official_original")
+        for key, replacement in {
+            "archive_sha256": "0" * 64, "archive_size_bytes": result["archive_size_bytes"] + 1,
+            "archive_prefix": "raw", "expected_labels_sha256": "0" * 64,
+            "labels_sha256": "0" * 64, "labels_byte_sha256_verified": False,
+            "archive": str(self.root / "data/incoming/another.zip"),
+        }.items():
+            with self.subTest(field=key):
+                changed = {**result, key: replacement}
+                with self.assertRaises(ReadinessError):
+                    validate_archive_source(self.root, changed)
+        for pending in (None, "pending", "0" * 64):
+            with self.subTest(placeholder=pending):
+                config.write_text(json.dumps({"official_original": {**source, "archive_sha256": pending}}))
+                with self.assertRaisesRegex(ReadinessError, "placeholder"):
+                    validate_archive_source(self.root, result)
+
+    def test_unknown_archive_source_does_not_pass_readiness(self):
+        with self.assertRaisesRegex(ReadinessError, "Unrecognized"):
+            validate_archive_source(self.root, {"archive_source_id": "anything_else"})
 
 
 if __name__ == "__main__":

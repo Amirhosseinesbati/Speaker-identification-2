@@ -55,6 +55,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=["inspect", "deploy", "bootstrap", "upload-assets", "resume-raw", "verify", "download-evidence"])
     parser.add_argument("--identity-file", type=Path, required=True)
+    parser.add_argument("--archive-source", choices=["local_upload", "official_original"], default="local_upload",
+                        help="Select the explicitly pinned ZIP container for full data verification")
     args = parser.parse_args()
     config = json.loads((ROOT / "configs/infra/deployment.json").read_text())
     subprocess.run([sys.executable, str(ROOT / "scripts/infra/vast_control.py"), "show"], check=True)
@@ -204,13 +206,22 @@ def main():
     elif args.action == "verify":
         import csv
         from datetime import datetime, timezone
+        archive_config = config
+        archive_options = []
+        if args.archive_source == "official_original":
+            archive_config = json.loads((ROOT / "configs/infra/archive_sources.json").read_text())[args.archive_source]
+            if archive_config["archive_path"] != "data/incoming/competition_parallel.zip" or archive_config["member_prefix"] != "training":
+                raise SystemExit("Official source must use its explicitly verified incoming path and archive prefix")
+            archive_options = ["--archive-prefix", archive_config["member_prefix"],
+                               "--expected-labels-sha256", archive_config["labels_sha256"],
+                               "--archive-source-id", args.archive_source]
         metadata_identity = json.loads((ROOT / "artifacts/infrastructure/data_metadata.identity.json").read_text())
         with (ROOT / config["metadata_files"][0]).open(encoding="utf-8-sig", newline="") as handle:
             audio = next(row["audio_file"] for row in csv.DictReader(handle) if row["usable_for_training"].lower() == "true")
         spool = "artifacts/infrastructure/mlflow_probe/" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         commands = [
             [".venv/bin/python", "scripts/infra/install_metadata.py", "--archive", "data/incoming/data_metadata.zip", "--expected-archive-sha256", metadata_identity["archive_sha256"], "--delete-archive-after-verification"],
-            [".venv/bin/python", "scripts/infra/verify_extract_data.py", "--archive", config["archive_path"], "--expected-archive-sha256", config["archive_sha256"], "--delete-archive-after-verification"],
+            [".venv/bin/python", "scripts/infra/verify_extract_data.py", "--archive", archive_config["archive_path"], "--expected-archive-sha256", archive_config["archive_sha256"], *archive_options, "--delete-archive-after-verification"],
             [".venv/bin/python", "scripts/infra/preflight_runtime.py", "--require-cuda", "--expected-gpu", "RTX3090", "--min-free-disk-gb", "10"],
             [".venv/bin/python", "scripts/checks/probe_campp.py", "--audio", "data/raw/" + audio, "--device", "cuda", "--config", config["training_config"]],
             [".venv/bin/python", "scripts/infra/with_project_env.py", ".venv/bin/python", "scripts/checks/probe_mlflow.py", "--experiment-name", config["mlflow_experiment_name"], "--spool-dir", spool, "--config", config["training_config"],
@@ -222,14 +233,16 @@ def main():
             if index < 2:
                 # Successful extraction already removed its incoming archive.
                 # Reuse only proof for this exact successfully installed archive.
-                archive = "data/incoming/data_metadata.zip" if index == 0 else config["archive_path"]
+                archive = "data/incoming/data_metadata.zip" if index == 0 else archive_config["archive_path"]
                 evidence = "metadata_readiness.json" if index == 0 else "data_readiness.json"
                 invocation = f"if [ -f {q(archive)} ]; then {invocation}; else cat artifacts/infrastructure/{evidence}; fi"
                 result = remote(f"set -eu; cd {q(workspace)}; " + invocation, capture=True)
                 proof = json.loads(result.stdout)
-                expected = metadata_identity["archive_sha256"] if index == 0 else config["archive_sha256"]
+                expected = metadata_identity["archive_sha256"] if index == 0 else archive_config["archive_sha256"]
                 if proof.get("status") != "passed" or proof.get("archive_deleted") is not True or proof.get("archive_sha256") != expected:
                     raise SystemExit("Transferred asset verification is missing, failed, or belongs to another archive.")
+                if index == 1 and proof.get("archive_source_id", "local_upload") != args.archive_source:
+                    raise SystemExit("Data evidence belongs to a different selected archive source")
                 if index == 0:
                     expected_files = {item["path"]: item["sha256"] for item in metadata_identity["files"]}
                     measured = remote(f"cd {q(workspace)} && sha256sum -- " + shlex.join(sorted(expected_files)), capture=True)

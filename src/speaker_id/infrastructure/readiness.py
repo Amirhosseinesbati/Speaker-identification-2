@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import shutil
 import socket
 import subprocess
@@ -48,6 +49,44 @@ def _package_versions() -> dict:
     return {distribution.metadata["Name"]: distribution.version
             for distribution in importlib.metadata.distributions()
             if distribution.metadata.get("Name")}
+
+
+def validate_archive_source(root: Path, data: dict) -> dict:
+    """Bind alternate container evidence without changing the trusted payload.
+
+    Old local-upload reports retain their original validation path. The official
+    original ZIP needs a separately committed container identity; an absent or
+    placeholder hash cannot produce ready evidence.
+    """
+    source_id = data.get("archive_source_id", "local_upload")
+    if source_id == "local_upload":
+        return {"archive_source_id": source_id}
+    _assert(source_id == "official_original", "Unrecognized dataset archive source ID")
+    config_path = confined_path(root, "configs/infra/archive_sources.json")
+    source = json.loads(config_path.read_text(encoding="utf-8"))["official_original"]
+    digest, labels_digest = source.get("archive_sha256"), source.get("labels_sha256")
+    for name, value in (("archive", digest), ("labels", labels_digest)):
+        _assert(isinstance(value, str) and re.fullmatch(r"[0-9a-fA-F]{64}", value) is not None
+                and value != "0" * 64, f"Official {name} source SHA256 is missing or a placeholder")
+    expected_archive = confined_path(root, source["archive_path"])
+    _assert(expected_archive.is_relative_to(root / "data/incoming") and expected_archive.suffix.lower() == ".zip",
+            "Official archive must be an incoming ZIP within this workspace")
+    _assert(confined_path(root, data["archive"]) == expected_archive, "Official archive path differs from its source identity")
+    _assert(data.get("archive_sha256") == digest.lower(), "Official ZIP SHA256 differs from its separately pinned source identity")
+    _assert(type(source.get("archive_size_bytes")) is int and source["archive_size_bytes"] > 0
+            and data.get("archive_size_bytes") == source["archive_size_bytes"],
+            "Official ZIP byte size differs from its source identity")
+    prefix = source.get("member_prefix")
+    _assert(isinstance(prefix, str) and re.fullmatch(r"[A-Za-z0-9_-]+", prefix) is not None,
+            "Official ZIP source has an invalid explicit member prefix")
+    _assert(data.get("archive_prefix") == prefix, "Official ZIP layout prefix differs from its source identity")
+    _assert(data.get("labels_byte_sha256_verified") is True
+            and data.get("expected_labels_sha256") == labels_digest.lower()
+            and data.get("labels_sha256") == labels_digest.lower(),
+            "Official ZIP labels.csv was not checked against the exact original CSV bytes")
+    return {"archive_source_id": source_id, "archive_sha256": digest.lower(),
+            "archive_source_config_sha256": sha256_file(config_path),
+            "labels_byte_sha256_verified": True, "archive_prefix": prefix}
 
 
 def _read_evidence(root: Path, paths: dict) -> tuple[dict, dict, list]:
@@ -164,6 +203,7 @@ def check_readiness(root: Path, config_path: Path, *, evidence_paths: dict | Non
     def data_check():
         data = reports["data"]
         _assert(data.get("status") == "passed", "Full transferred-data verification has not passed")
+        archive_identity = validate_archive_source(root, data)
         _assert(data.get("training_started") is False, "Data evidence must not describe training")
         _assert(data.get("manifest_sha256") == contract["input_hashes"]["manifest"], "Data manifest changed after verification")
         _assert(data.get("audio_files_verified") == config["expected_source_files"], "Not all audio files were verified")
@@ -184,6 +224,7 @@ def check_readiness(root: Path, config_path: Path, *, evidence_paths: dict | Non
             _assert(audio.is_file() and audio.stat().st_size == int(row["file_bytes"]),
                     f"Raw audio missing/size changed: {row['audio_file']}")
         return {"audio_files": data["audio_files_verified"], "archive_deleted": True,
+                **archive_identity,
                 "launch_policy": "scripts/train.py rehashes every audio file before execution"}
 
     run_check("full_data_verification", data_check, evidence="data", requires_contract=True)

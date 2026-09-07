@@ -1,0 +1,15 @@
+{
+  "official_original": {
+    "url": "https://iaaa-contest-speaker.s3.ir-thr-at1.arvanstorage.ir/iaaa-contest-speaker.zip?versionId=",
+    "etag": "\"726c7582d0338030036f7534a288a0e7-292\"",
+    "archive_path": "data/incoming/competition_parallel.zip",
+    "archive_size_bytes": 9764950603,
+    "archive_sha256": "6ca989a80fa36030ebe7fb3f17e5299be5adf8221617e08eeb6956ded68bc9c4",
+    "sha256_provenance": "Measured after successful HTTPS download with the pinned object ETag; not an organizer-published checksum",
+    "member_prefix": "training",
+    "labels_sha256": "95ca34bfc8611616f82287d0bcb1ed5ae6b9cd120bd2fb54ced1f66525e88edc",
+    "payload_verification": "Every audio byte hash and size must match the existing local EDA manifest; labels must match both exact bytes and speaker mappings",
+    "canonical_local_archive": "data/raw.zip",
+    "canonical_local_archive_sha256": "9b01450dd59aa13909f8416e4b2450d512b88f5a9f45d398824937dd63e22ac6"
+  }
+}

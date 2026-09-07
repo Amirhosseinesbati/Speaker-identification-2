@@ -1,7 +1,7 @@
 """Verify a transferred dataset before publishing files or deleting its ZIP.
 
-The manifest is the trusted inventory tracked with the project. Archive member
-names are deliberately restricted to the competition's flat ``raw/`` layout.
+The manifest is the trusted inventory transferred with the project. Archive
+members are restricted to a flat dataset or one explicitly selected root.
 No existing raw file is overwritten, and no raw file is ever deleted.
 """
 
@@ -118,7 +118,10 @@ def _validate_labels(raw: bytes, manifest: dict[str, dict]) -> None:
         raise DataVerificationError("labels.csv names/labels differ from the trusted manifest")
 
 
-def _archive_inventory(archive: zipfile.ZipFile, expected: set[str]) -> dict[str, zipfile.ZipInfo]:
+def _archive_inventory(archive: zipfile.ZipFile, expected: set[str],
+                       archive_prefix: str | None = None) -> dict[str, zipfile.ZipInfo]:
+    if archive_prefix is not None:
+        _flat_filename(archive_prefix)
     members = {}
     seen_raw_names = set()
     for info in archive.infolist():
@@ -139,10 +142,17 @@ def _archive_inventory(archive: zipfile.ZipFile, expected: set[str]) -> dict[str
             raise DataVerificationError(f"Duplicate ZIP member: {name}")
         seen_raw_names.add(name)
         if info.is_dir():
-            if name != "raw/":
+            allowed_directory = (archive_prefix or "raw") + "/"
+            if name != allowed_directory:
                 raise DataVerificationError(f"Unexpected ZIP directory: {name}")
+            if info.file_size != 0:
+                raise DataVerificationError(f"ZIP directory must have an empty payload: {name}")
             continue
-        if len(components) == 2 and components[0] == "raw":
+        if archive_prefix is not None:
+            if len(components) != 2 or components[0] != archive_prefix:
+                raise DataVerificationError(f"ZIP member is outside the explicit prefix {archive_prefix!r}: {name}")
+            basename = _flat_filename(components[1])
+        elif len(components) == 2 and components[0] == "raw":
             basename = _flat_filename(components[1])
         elif len(components) == 1:
             basename = _flat_filename(components[0])
@@ -163,13 +173,19 @@ def verify_extract_data(*, workspace: Path, archive: Path,
                         manifest: Path = Path("data/processed/eda_v1/audio_manifest.csv"),
                         output: Path = Path("data/raw"),
                         report: Path = Path("artifacts/infrastructure/data_readiness.json"),
-                        delete_archive_after_verification: bool = False) -> dict:
+                        delete_archive_after_verification: bool = False,
+                        archive_prefix: str | None = None,
+                        expected_labels_sha256: str | None = None,
+                        archive_source_id: str = "local_upload") -> dict:
     """Full archive CRC + audio SHA256 + labels verification, then safe publish.
 
     Deletion is opt-in and restricted to a ZIP under ``data/incoming``. A local
     source ZIP such as ``data/raw.zip`` cannot be deleted by this operation.
     Existing matching files are reused; any unrelated or mismatching file fails
     verification. Partial publication after an interrupted process is resumable.
+    An explicit archive_prefix accepts only ``prefix/<flat filename>`` members;
+    it never strips arbitrary directory paths. Optional labels SHA256 binds the
+    exact CSV bytes as well as the mandatory filename-to-speaker mapping.
     """
     started = time.monotonic()
     workspace = workspace.resolve(strict=True)
@@ -197,14 +213,25 @@ def verify_extract_data(*, workspace: Path, archive: Path,
                 raise DataVerificationError("Deletion requires expected SHA256 and a ZIP under data/incoming")
         if expected_archive_sha256 is not None and not re.fullmatch(r"[0-9a-fA-F]{64}", expected_archive_sha256):
             raise DataVerificationError("Expected archive SHA256 must be exactly 64 hexadecimal characters")
+        if archive_prefix is not None:
+            _flat_filename(archive_prefix)
+        if not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", archive_source_id):
+            raise DataVerificationError("Archive source ID must be a simple lowercase identifier")
+        if expected_labels_sha256 is not None:
+            if not re.fullmatch(r"[0-9a-fA-F]{64}", expected_labels_sha256):
+                raise DataVerificationError("Expected labels SHA256 must be exactly 64 hexadecimal characters")
+            expected_labels_sha256 = expected_labels_sha256.lower()
         expected = load_manifest(manifest)
         result.update({"archive": str(archive), "output": str(output),
+                       "archive_source_id": archive_source_id, "archive_prefix": archive_prefix,
+                       "archive_size_bytes": archive.stat().st_size,
+                       "expected_labels_sha256": expected_labels_sha256,
                        "manifest_sha256": sha256_file(manifest), "audio_files_expected": len(expected),
                        "class_count": len({row["speaker_id"] for row in expected.values()})})
         archive_hash = sha256_file(archive)
         result["archive_sha256"] = archive_hash
         if expected_archive_sha256 and archive_hash != expected_archive_sha256.lower():
-            raise DataVerificationError("Transferred ZIP SHA256 does not match the local source")
+            raise DataVerificationError("Transferred ZIP SHA256 does not match the selected source identity")
         archive_before = archive.stat()
         wanted = set(expected) | {"labels.csv"}
         if output.exists():
@@ -220,7 +247,7 @@ def verify_extract_data(*, workspace: Path, archive: Path,
         archived_hashes = {}
         reused = 0
         with zipfile.ZipFile(archive) as zipped:
-            members = _archive_inventory(zipped, wanted)
+            members = _archive_inventory(zipped, wanted, archive_prefix=archive_prefix)
             for name, info in members.items():
                 if name in expected and info.file_size != int(expected[name]["file_bytes"]):
                     raise DataVerificationError(f"ZIP member size disagrees with manifest: {name}")
@@ -241,6 +268,8 @@ def verify_extract_data(*, workspace: Path, archive: Path,
                     raise DataVerificationError(f"ZIP audio SHA256 differs from manifest: {name}")
                 if name == "labels.csv":
                     _validate_labels(staged_path.read_bytes(), expected)
+                    if expected_labels_sha256 is not None and observed != expected_labels_sha256:
+                        raise DataVerificationError("ZIP labels.csv SHA256 differs from the expected original CSV bytes")
                 if destination.exists():
                     if sha256_file(destination) != observed:
                         raise DataVerificationError(f"Existing raw file differs; refusing overwrite: {name}")
@@ -264,6 +293,7 @@ def verify_extract_data(*, workspace: Path, archive: Path,
         _validate_labels((output / "labels.csv").read_bytes(), expected)
         result.update({"status": "passed", "audio_files_verified": len(expected),
                        "labels_verified": True, "labels_sha256": archived_hashes["labels.csv"],
+                       "labels_byte_sha256_verified": expected_labels_sha256 is not None,
                        "output_files_verified": len(archived_hashes), "output_bytes_verified": verified_bytes,
                        "existing_matching_files_reused": reused,
                        "elapsed_seconds": round(time.monotonic() - started, 3)})
