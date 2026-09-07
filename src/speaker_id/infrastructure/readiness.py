@@ -240,7 +240,9 @@ def check_readiness(root: Path, config_path: Path, *, evidence_paths: dict | Non
                           and path.suffix not in {".pyc", ".pyo"}}
         archived_source = {item["path"]: item["sha256"] for item in source["files"]}
         _assert(current_source == archived_source, "MLflow uploaded source snapshot is stale")
-        _assert(sha256_file(directory / "artifacts/source_snapshot.tar.gz") == source["archive_sha256"],
+        _assert(source.get("archive_format") == "zip" and source.get("archive_name") == "source_snapshot.zip",
+                "MLflow source snapshot must use the transport-stable ZIP format")
+        _assert(sha256_file(directory / "artifacts/source_snapshot.zip") == source["archive_sha256"],
                 "Local source snapshot differs from its recorded hash")
         run_state = json.loads((directory / "run_state.json").read_text(encoding="utf-8"))
         _assert(str(run_state["run_id"]) == str(probe["run_id"]), "MLflow report/run state differ")
@@ -271,7 +273,7 @@ def check_readiness(root: Path, config_path: Path, *, evidence_paths: dict | Non
         "input_hashes": contract.get("input_hashes") if contract else None,
         "model_weight_sha256": contract["model"]["weights_sha256"] if contract else None,
         "evidence": metadata, "checks": checks, "blocked_checks": len(blocked),
-        "next_command_after_user_start": f".venv/bin/python scripts/train.py --config {config_path.relative_to(root).as_posix()} --execute-training",
+        "next_command_after_user_start": f"VAST_INSTANCE_ID=50079023 .venv/bin/python scripts/infra/with_project_env.py .venv/bin/python scripts/train.py --config {config_path.relative_to(root).as_posix()} --execute-training",
         "limits": ["This report performs no model training or calibration.",
                    "Execution rehashes all source audio and repeats a live MLflow artifact and metadata roundtrip.",
                    "Leaderboard package ranges are checked; exact offline submission compatibility requires the final bundle test."],

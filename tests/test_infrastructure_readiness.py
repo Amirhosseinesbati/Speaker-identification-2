@@ -67,10 +67,11 @@ class ReadinessTests(unittest.TestCase):
         })
         spool = self.root / "artifacts/infrastructure/mlflow_probe"
         artifacts = spool / "artifacts"
-        self.write(artifacts / "source_snapshot.tar.gz", b"synthetic source archive")
+        self.write(artifacts / "source_snapshot.zip", b"synthetic source archive")
         self.write(artifacts / "source_manifest.json", {
             "git_commit": "commit-test", "src_dirty": False,
-            "archive_sha256": sha256_file(artifacts / "source_snapshot.tar.gz"),
+            "archive_sha256": sha256_file(artifacts / "source_snapshot.zip"),
+            "archive_format": "zip", "archive_name": "source_snapshot.zip",
             "files": [{"path": "src/sample.py", "sha256": self.contract["code_hashes"]["src/sample.py"]}],
         })
         fingerprints = {**self.contract["input_hashes"], "weights": self.weight_hash,

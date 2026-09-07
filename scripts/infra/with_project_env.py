@@ -25,6 +25,8 @@ def mlflow_environment(env_file: Path = ROOT / ".env") -> dict[str, str]:
     env.setdefault("MLFLOW_HTTP_REQUEST_TIMEOUT", "30")
     env.setdefault("MLFLOW_HTTP_REQUEST_MAX_RETRIES", "2")
     env["MLFLOW_ENABLE_SYSTEM_METRICS_LOGGING"] = "false"
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
     env["GIT_CONFIG_GLOBAL"] = os.devnull
     env["GIT_CONFIG_NOSYSTEM"] = "1"
     return env

@@ -128,11 +128,24 @@ def main():
             invocation = shlex.join(command)
             if index < 2:
                 # Successful extraction already removed its incoming archive.
-                # Preserve its evidence and let aggregate checks validate it.
+                # Reuse only proof for this exact successfully installed archive.
                 archive = "data/incoming/data_metadata.zip" if index == 0 else config["archive_path"]
                 evidence = "metadata_readiness.json" if index == 0 else "data_readiness.json"
-                invocation = f"if [ -f {q(archive)} ]; then {invocation}; else test -f artifacts/infrastructure/{evidence}; fi"
-            remote(f"set -eu; cd {q(workspace)}; export VAST_INSTANCE_ID={config['instance_id']}; " + invocation)
+                invocation = f"if [ -f {q(archive)} ]; then {invocation}; else cat artifacts/infrastructure/{evidence}; fi"
+                result = remote(f"set -eu; cd {q(workspace)}; " + invocation, capture=True)
+                proof = json.loads(result.stdout)
+                expected = metadata_identity["archive_sha256"] if index == 0 else config["archive_sha256"]
+                if proof.get("status") != "passed" or proof.get("archive_deleted") is not True or proof.get("archive_sha256") != expected:
+                    raise SystemExit("Transferred asset verification is missing, failed, or belongs to another archive.")
+                if index == 0:
+                    expected_files = {item["path"]: item["sha256"] for item in metadata_identity["files"]}
+                    measured = remote(f"cd {q(workspace)} && sha256sum -- " + shlex.join(sorted(expected_files)), capture=True)
+                    actual = {line.split(maxsplit=1)[1].strip(): line.split(maxsplit=1)[0] for line in measured.stdout.splitlines()}
+                    if actual != expected_files:
+                        raise SystemExit("Installed metadata differs from the local prepared bundle.")
+                print(f"Verified transferred archive and installed evidence: {archive}")
+            else:
+                remote(f"set -eu; cd {q(workspace)}; export VAST_INSTANCE_ID={config['instance_id']}; " + invocation)
         (ROOT / "artifacts/infrastructure/remote_probe_path.json").write_text(json.dumps({"spool": spool}))
         print("All server readiness checks passed. No training has started.")
     else:

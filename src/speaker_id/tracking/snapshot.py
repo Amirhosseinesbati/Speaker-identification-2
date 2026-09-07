@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
-import gzip
 import hashlib
 import importlib.metadata
-import io
 import json
 import os
 from pathlib import Path
 import platform
+import stat
 import subprocess
 import sys
-import tarfile
+import zipfile
 
 from .security import Redactor
 
@@ -61,8 +60,14 @@ def git_provenance(root: Path) -> dict:
 
 
 def source_snapshot(root: Path, destination: Path, redactor: Redactor | None = None) -> dict:
-    """Archive every regular src file in deterministic POSIX tar order."""
+    """Archive exact src bytes in deterministic ZIP order and metadata.
+
+    ZIP avoids HTTP Content-Encoding handling of .tar.gz downloads: some
+    backends expose gzip files as encoded responses and clients decompress them.
+    """
     root, destination = root.resolve(), destination.resolve()
+    if destination.suffix.lower() != ".zip":
+        raise ValueError("Source snapshots require the transport-stable .zip format.")
     source = root / "src"
     if not source.is_dir():
         raise ValueError("The project must have a src directory.")
@@ -86,19 +91,19 @@ def source_snapshot(root: Path, destination: Path, redactor: Redactor | None = N
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_suffix(destination.suffix + ".tmp")
     with temporary.open("wb") as output:
-        with gzip.GzipFile(filename="", mode="wb", fileobj=output, mtime=0) as compressed:
-            with tarfile.open(mode="w", fileobj=compressed, format=tarfile.PAX_FORMAT) as archive:
-                for name, payload in files:
-                    info = tarfile.TarInfo(name)
-                    info.size, info.mode, info.mtime = len(payload), 0o644, 0
-                    info.uid = info.gid = 0
-                    info.uname = info.gname = ""
-                    archive.addfile(info, io.BytesIO(payload))
+        with zipfile.ZipFile(output, mode="w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+            for name, payload in files:
+                info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+                info.create_system = 3
+                info.external_attr = (stat.S_IFREG | 0o644) << 16
+                info.compress_type = zipfile.ZIP_DEFLATED
+                archive.writestr(info, payload, compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
         output.flush()
         os.fsync(output.fileno())
     temporary.replace(destination)
     manifest = {
-        "schema_version": 1, **git_provenance(root), "archive_sha256": sha256_file(destination),
+        "schema_version": 2, **git_provenance(root), "archive_sha256": sha256_file(destination),
+        "archive_format": "zip", "archive_name": destination.name,
         "file_count": len(files), "excluded_generated_directories": sorted(_EXCLUDED_DIRS),
         "files": [{"path": name, "bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}
                   for name, payload in files],

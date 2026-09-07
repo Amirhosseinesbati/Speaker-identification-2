@@ -2,10 +2,10 @@ import hashlib
 import json
 from pathlib import Path
 import shutil
-import tarfile
 import tempfile
 from types import SimpleNamespace
 import unittest
+import zipfile
 
 from speaker_id.tracking import DurableMLflowRun, ExperimentBinding, Redactor, resolve_experiment
 from speaker_id.tracking.security import safe_endpoint
@@ -20,7 +20,9 @@ class FakeClient:
         self.experiments = {}
         self.runs = {}
         self.metric_calls = []
+        self.batch_calls = []
         self.fail_metric_once = False
+        self.fail_metric_batch_number = None
         self.corrupt_download = False
         self.fail_create_ack_once = False
 
@@ -70,6 +72,18 @@ class FakeClient:
         self.metric_calls.append((run_id, key, value, timestamp, step))
         self.runs[run_id].data.metrics[key] = value
 
+    def log_batch(self, run_id, metrics=(), params=(), tags=(), synchronous=True):
+        self.batch_calls.append({"metrics": len(metrics), "params": len(params)})
+        self.assert_synchronous = synchronous
+        metric_batch_number = sum(batch["metrics"] > 0 for batch in self.batch_calls)
+        if metrics and self.fail_metric_batch_number == metric_batch_number:
+            self.fail_metric_batch_number = None
+            raise ConnectionError("Metric batch failure before acknowledgement")
+        for param in params:
+            self.log_param(run_id, param.key, param.value)
+        for metric in metrics:
+            self.log_metric(run_id, metric.key, metric.value, metric.timestamp, metric.step)
+
     def log_artifact(self, run_id, local_path, artifact_path=None):
         source = Path(local_path)
         destination = self.directory / run_id / (artifact_path or "") / source.name
@@ -109,10 +123,12 @@ class TrackingTests(unittest.TestCase):
         self.temporary.cleanup()
 
     def prepare(self, name="run", **kwargs):
+        config = kwargs.pop("config", {"model": "CAM++", "fold": 0, "seed": 1729})
         return DurableMLflowRun.prepare(
             project_root=self.root, spool_dir=self.root / name, binding=self.binding,
-            run_name="CAM++ infrastructure", config={"model": "CAM++", "fold": 0, "seed": 1729},
+            run_name="CAM++ infrastructure", config=config,
             client=self.client, tracking_uri=self.endpoint, redactor=Redactor(environ={}), **kwargs,
+            entity_factory=lambda name, **fields: SimpleNamespace(**fields),
         )
 
     def test_recursively_redacts_keys_values_and_url_credentials(self):
@@ -132,13 +148,14 @@ class TrackingTests(unittest.TestCase):
         cache = self.root / "src/speaker_id/__pycache__"
         cache.mkdir()
         (cache / "model.cpython-312.pyc").write_bytes(b"cache")
-        first = source_snapshot(self.root, self.root / "one/source.tar.gz", Redactor(environ={}))
-        second = source_snapshot(self.root, self.root / "two/source.tar.gz", Redactor(environ={}))
+        first = source_snapshot(self.root, self.root / "one/source.zip", Redactor(environ={}))
+        second = source_snapshot(self.root, self.root / "two/source.zip", Redactor(environ={}))
         self.assertEqual(first["archive_sha256"], second["archive_sha256"])
         self.assertEqual(first["file_count"], 1)
-        with tarfile.open(self.root / "one/source.tar.gz") as archive:
-            self.assertEqual(archive.getnames(), ["src/speaker_id/model.py"])
-            content = archive.extractfile("src/speaker_id/model.py").read()
+        self.assertEqual(first["archive_format"], "zip")
+        with zipfile.ZipFile(self.root / "one/source.zip") as archive:
+            self.assertEqual(archive.namelist(), ["src/speaker_id/model.py"])
+            content = archive.read("src/speaker_id/model.py")
         self.assertEqual(content, b"answer = 42\n")
         self.assertEqual(hashlib.sha256(content).hexdigest(), first["files"][0]["sha256"])
 
@@ -147,7 +164,7 @@ class TrackingTests(unittest.TestCase):
         original = b'credential = "actual-private-token-123"\n'
         model.write_bytes(original)
         with self.assertRaisesRegex(ValueError, "credential value"):
-            source_snapshot(self.root, self.root / "snapshot.tar.gz", Redactor(environ={"TOKEN": "actual-private-token-123"}))
+            source_snapshot(self.root, self.root / "snapshot.zip", Redactor(environ={"TOKEN": "actual-private-token-123"}))
         self.assertEqual(model.read_bytes(), original)
 
     def test_existing_experiment_cannot_be_adopted_without_its_binding(self):
@@ -177,7 +194,8 @@ class TrackingTests(unittest.TestCase):
         self.assertIn('"inner.macro_f1": 0.5', (run.directory / "events.jsonl").read_text())
         self.assertNotIn("do-not-log-this", run.state_path.read_text())
         identifier = run.run_id
-        resumed = DurableMLflowRun(run.directory, client=self.client, tracking_uri=self.endpoint, redactor=Redactor(environ={}))
+        resumed = DurableMLflowRun(run.directory, client=self.client, tracking_uri=self.endpoint, redactor=Redactor(environ={}),
+                                  entity_factory=lambda name, **fields: SimpleNamespace(**fields))
         self.assertTrue(resumed.flush(strict=True))
         self.assertEqual(identifier, resumed.run_id)
         self.assertEqual(len(self.client.metric_calls), 1)
@@ -195,13 +213,53 @@ class TrackingTests(unittest.TestCase):
         self.assertEqual(run.run_id, "run-1")
         self.assertEqual(len(self.client.runs), 1)
 
+    def test_pending_metric_events_are_batched_and_failed_batch_is_not_acknowledged(self):
+        run = self.prepare()
+        for step in range(10):
+            run.log_metrics({f"metric_{index}": step + index for index in range(12)}, step=step, sync=False)
+        self.client.fail_metric_once = True
+        self.assertFalse(run.flush())
+        self.assertEqual(run.state["sent_event_sequence"], -1)
+        self.assertEqual(self.client.batch_calls[-1]["metrics"], 120)
+        self.assertTrue(run.flush(strict=True))
+        self.assertEqual(run.state["sent_event_sequence"], 9)
+        self.assertEqual(len(self.client.metric_calls), 120)
+        self.assertEqual(sum(batch["params"] > 0 for batch in self.client.batch_calls), 1)
+        self.assertTrue(self.client.assert_synchronous)
+
+    def test_oversized_event_is_split_into_bounded_batches(self):
+        run = self.prepare()
+        run.log_metrics({f"class_{index}": float(index) for index in range(1101)}, sync=False)
+        run.flush(strict=True)
+        self.assertEqual([batch["metrics"] for batch in self.client.batch_calls if batch["metrics"]], [500, 500, 101])
+        self.assertEqual(run.state["sent_event_sequence"], 0)
+
+    def test_partial_oversized_event_remains_unacknowledged_until_all_chunks_succeed(self):
+        run = self.prepare()
+        run.log_metrics({f"class_{index}": float(index) for index in range(1101)}, sync=False)
+        self.client.fail_metric_batch_number = 2
+        self.assertFalse(run.flush())
+        self.assertEqual(run.state["sent_event_sequence"], -1)
+        self.assertEqual(len(self.client.metric_calls), 500)
+        self.assertTrue(run.flush(strict=True))
+        self.assertEqual(run.state["sent_event_sequence"], 0)
+        self.assertEqual(len(self.client.metric_calls), 1601)  # At-least-once replay, no omitted metrics.
+        self.assertEqual(run.verify_remote_metadata()["metrics_verified"], 1101)
+
+    def test_params_use_bounded_batches_and_are_not_resent_after_acknowledgement(self):
+        run = self.prepare(config={f"parameter_{index}": index for index in range(203)})
+        run.flush(strict=True)
+        self.assertEqual([batch["params"] for batch in self.client.batch_calls], [100, 100, 3])
+        run.flush(strict=True)
+        self.assertEqual(len(self.client.batch_calls), 3)
+
     def test_full_artifact_roundtrip_and_corruption_detection(self):
         run = self.prepare()
         run.log_metrics({"preflight.training_started": 0}, sync=False)
         run.write_report({"status": "passed", "training_started": False})
         result = run.verify_artifacts()
         self.assertEqual(result["status"], "passed")
-        self.assertIn("source_snapshot.tar.gz", result["artifact_paths"])
+        self.assertIn("source_snapshot.zip", result["artifact_paths"])
         self.assertIn("resolved_config.json", result["artifact_paths"])
         self.assertIn("report.md", result["artifact_paths"])
         run.finish("FINISHED", strict=True)

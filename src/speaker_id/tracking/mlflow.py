@@ -120,7 +120,7 @@ def _flatten_params(config, prefix="") -> dict[str, str]:
 class DurableMLflowRun:
     """One run whose source, report, metrics, and unsent work survive process exit."""
 
-    def __init__(self, directory: Path, *, client=None, tracking_uri=None, redactor=None):
+    def __init__(self, directory: Path, *, client=None, tracking_uri=None, redactor=None, entity_factory=None):
         self.directory = Path(directory).resolve()
         self.artifacts = self.directory / "artifacts"
         self.redactor = redactor or Redactor()
@@ -132,12 +132,13 @@ class DurableMLflowRun:
         if safe_endpoint(uri) != self.binding.tracking_endpoint:
             raise ValueError("Run resume attempted against a different MLflow backend.")
         self.client = client if client is not None else make_client(uri)
+        self.entity_factory = entity_factory
 
     @classmethod
     def prepare(cls, *, project_root: Path, spool_dir: Path, binding: ExperimentBinding,
                 run_name: str, config: dict, input_paths: dict[str, Path] | None = None,
                 run_kind="infrastructure_preflight", training_started=False,
-                client=None, tracking_uri=None, redactor=None, parent_run_id=None):
+                client=None, tracking_uri=None, redactor=None, parent_run_id=None, entity_factory=None):
         binding.validate()
         redactor = redactor or Redactor()
         directory = Path(spool_dir).resolve()
@@ -150,7 +151,7 @@ class DurableMLflowRun:
         write_json(artifacts / "environment_versions.json", redactor(environment_versions()))
         inputs = redactor(input_fingerprints(input_paths or {}))
         write_json(artifacts / "inputs_manifest.json", inputs)
-        source = source_snapshot(Path(project_root), artifacts / "source_snapshot.tar.gz", redactor)
+        source = source_snapshot(Path(project_root), artifacts / "source_snapshot.zip", redactor)
         tags = {
             "mlflow.runName": redactor.text(run_name), "speaker_id.project": PROJECT,
             "speaker_id.scope_id": binding.scope_id, "speaker_id.run_kind": run_kind,
@@ -172,7 +173,8 @@ class DurableMLflowRun:
         }
         write_json(directory / "run_state.json", state)
         (directory / "events.jsonl").touch()
-        run = cls(directory, client=client, tracking_uri=tracking_uri, redactor=redactor)
+        run = cls(directory, client=client, tracking_uri=tracking_uri, redactor=redactor,
+                  entity_factory=entity_factory)
         run.write_report({
             "status": "prepared", "run_kind": run_kind, "training_started": bool(training_started),
             "source_git_commit": source["git_commit"], "source_sha256": source["archive_sha256"],
@@ -186,6 +188,19 @@ class DurableMLflowRun:
 
     def _save(self):
         write_json(self.state_path, self.redactor(self.state))
+
+    def _entity(self, name: str, **fields):
+        if self.entity_factory is not None:
+            return self.entity_factory(name, **fields)
+        # Import only on real batch delivery; pure local/fake-client use needs no MLflow package.
+        from mlflow import entities
+        return getattr(entities, name)(**fields)
+
+    def _send_metric_batch(self, records, acknowledged_sequence):
+        if records:
+            self.client.log_batch(self.run_id, metrics=records, synchronous=True)
+        self.state["sent_event_sequence"] = acknowledged_sequence
+        self._save()
 
     def log_metrics(self, metrics: dict[str, float], *, step: int = 0, sync=True, strict=False):
         if not isinstance(step, int) or step < 0:
@@ -250,18 +265,36 @@ class DurableMLflowRun:
                 self.state["run_id"] = created.info.run_id
                 self._save()
             if not self.state["params_sent"]:
-                for key, value in self.state["params"].items():
-                    self.client.log_param(self.run_id, key, value)
+                params = [self._entity("Param", key=key, value=value) for key, value in self.state["params"].items()]
+                for start in range(0, len(params), 100):
+                    self.client.log_batch(self.run_id, params=params[start:start + 100], synchronous=True)
                 self.state["params_sent"] = True
                 self._save()
+            pending_metrics = []
+            pending_sequence = self.state["sent_event_sequence"]
             for sequence, line in enumerate((self.directory / "events.jsonl").read_text(encoding="utf-8").splitlines()):
                 if sequence <= self.state["sent_event_sequence"]:
                     continue
                 event = json.loads(line)
-                for key, value in event["metrics"].items():
-                    self.client.log_metric(self.run_id, key, value, timestamp=event["timestamp_ms"], step=event["step"])
-                self.state["sent_event_sequence"] = sequence
-                self._save()
+                metrics = [self._entity("Metric", key=key, value=value, timestamp=event["timestamp_ms"], step=event["step"])
+                           for key, value in event["metrics"].items()]
+                if len(metrics) > 500:
+                    if pending_sequence > self.state["sent_event_sequence"]:
+                        self._send_metric_batch(pending_metrics, pending_sequence)
+                        pending_metrics = []
+                    # A single oversized event is acknowledged only after every chunk succeeds.
+                    for start in range(0, len(metrics), 500):
+                        self.client.log_batch(self.run_id, metrics=metrics[start:start + 500], synchronous=True)
+                    self._send_metric_batch([], sequence)
+                    pending_sequence = sequence
+                    continue
+                if len(pending_metrics) + len(metrics) > 500:
+                    self._send_metric_batch(pending_metrics, pending_sequence)
+                    pending_metrics = []
+                pending_metrics.extend(metrics)
+                pending_sequence = sequence
+            if pending_sequence > self.state["sent_event_sequence"]:
+                self._send_metric_batch(pending_metrics, pending_sequence)
             for path in sorted(self.artifacts.rglob("*")):
                 if not path.is_file():
                     continue
