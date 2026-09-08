@@ -39,6 +39,11 @@ case "$1" in
         ENTRYPOINT=scripts/score_adapted.py
         EXECUTION_FLAG=--execute
         ;;
+    configs/package/campp_selected.json)
+        CONFIG_PATH=$1
+        ENTRYPOINT=scripts/package_selected.py
+        EXECUTION_FLAG=--execute
+        ;;
     configs/package/campp_s002f.json)
         CONFIG_PATH=$1
         ENTRYPOINT=scripts/package_frozen.py
