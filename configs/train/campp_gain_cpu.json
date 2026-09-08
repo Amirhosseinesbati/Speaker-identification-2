@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "experiment_code": "C001",
+  "run_name": "C001-campp-matched-cpu-fixed-rms-boost",
+  "readiness_config": "configs/train/campp_coverage.json",
+  "output_root": "artifacts/training/cpu_gain",
+  "source_release_config": "configs/package/campp_selected.json",
+  "source_release_config_sha256": "1f0281a98f60ccfd7c309a67a2dec3936b1c787f3f8b26d43b53f743eb17ae2b",
+  "gain_policy": {
+    "schema_version": 1,
+    "name": "boost_rms_v1",
+    "target_rms_dbfs": -20.0,
+    "maximum_gain_db": 60.0,
+    "peak_ceiling": 0.95,
+    "position": "after_channel_selection_and_resampling_before_crop_or_pad",
+    "statistics_dtype": "float64",
+    "multiplication_dtype": "float32",
+    "gain_rounding": "float32_toward_zero",
+    "attenuate": false,
+    "clip": false,
+    "zero_signal": "unchanged"
+  },
+  "identity_policy": {
+    "schema_version": 1,
+    "name": "identity_v1"
+  },
+  "alphas": [
+    0.0,
+    0.25,
+    0.5,
+    0.75,
+    1.0
+  ],
+  "alpha_tie_order": [
+    0.0,
+    1.0,
+    0.25,
+    0.5,
+    0.75
+  ],
+  "unknown_weights": [
+    0.0,
+    0.25,
+    0.5,
+    0.75,
+    1.0
+  ],
+  "margin_weights": [
+    0.0,
+    0.5
+  ],
+  "threshold_candidates": 201,
+  "probability_temperature": 0.05,
+  "selection_policy": "Choose frontend, alpha and gate using group-excluded inner queries only; ties prefer identity.",
+  "decision_rule": {
+    "minimum_pooled_improvement": 0.003,
+    "maximum_fold_decline": 0.005
+  },
+  "primary_contrast": "C001d minus C001b; historical GPU-cache control is never a selectable frontend",
+  "recipes": [
+    "C001a_historical_control",
+    "C001b_cpu_identity",
+    "C001c_cpu_gain",
+    "C001d_inner_frontend_choice"
+  ],
+  "execution": {
+    "device": "cpu",
+    "threads": 4,
+    "interop_threads": 1,
+    "worker_count": 1,
+    "maximum_extraction_seconds": 28800,
+    "progress_every_pairs": 50
+  },
+  "cp001": {
+    "directory": "artifacts/infrastructure/cpu_pilots/CP001_20260908T131952Z_ba9bdeee",
+    "report_sha256": "edbcd09d3c03c7edd0d8cdf0a2ade9d2799f6860d21e03e7f8c1a7fd5116515d",
+    "parent_run_id": "5edec7fb3ebf4de1be47d61fba456db5",
+    "git_commit": "212a9aa23575c6e59993e7c8cef5b01be2f5904e"
+  },
+  "mlflow_payload": "configs_source_hashes_reports_and_scalar_metrics_no_embeddings"
+}
