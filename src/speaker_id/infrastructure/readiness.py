@@ -117,6 +117,17 @@ def _data_verification_mode(config: dict) -> str:
     return mode
 
 
+def _mlflow_state_path(config: dict, root: Path) -> Path:
+    """Resolve the experiment binding receipt selected by this contract."""
+    value = config.get("mlflow_state_path", "artifacts/infrastructure/mlflow_state.json")
+    _assert(isinstance(value, str) and value.strip(),
+            "Training configuration mlflow_state_path must be a nonempty string")
+    path = confined_path(root, value)
+    _assert(path.is_relative_to(root / "artifacts/infrastructure"),
+            "MLflow binding state must stay under artifacts/infrastructure")
+    return path
+
+
 def validate_archive_source(root: Path, data: dict) -> dict:
     """Bind alternate container evidence without changing the trusted payload.
 
@@ -406,10 +417,12 @@ def check_readiness(root: Path, config_path: Path, *, evidence_paths: dict | Non
         for name, digest in uploaded.items():
             artifact = confined_path(root, directory / "artifacts" / name)
             _assert(sha256_file(artifact) == digest, f"MLflow probe artifact changed: {name}")
-        binding = json.loads((root / "artifacts/infrastructure/mlflow_state.json").read_text(encoding="utf-8"))["binding"]
+        binding_path = _mlflow_state_path(config, root)
+        binding = json.loads(binding_path.read_text(encoding="utf-8"))["binding"]
         _assert(binding == run_state["binding"], "MLflow binding changed after probe")
         _assert(str(binding["experiment_id"]) == str(probe["experiment_id"]), "MLflow report refers to another experiment")
         return {"experiment_id": binding["experiment_id"], "run_id": probe["run_id"],
+                "binding_state_path": binding_path.relative_to(root).as_posix(),
                 "fresh_live_roundtrip_required_at_execution": True}
 
     run_check("mlflow_roundtrip", mlflow_check, evidence="mlflow", requires_contract=True)

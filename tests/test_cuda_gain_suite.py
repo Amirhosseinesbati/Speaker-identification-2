@@ -1,7 +1,9 @@
 """C002 orchestration guardrails without a server or model."""
+import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -28,6 +30,21 @@ class Tracker:
 
 
 class CUDASuiteTests(unittest.TestCase):
+    def test_execution_reaches_backend_preparation_with_isolated_binding(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            binding = root / "artifacts/infrastructure/C002_preparation/mlflow_state.json"
+            binding.parent.mkdir(parents=True)
+            binding.write_text(json.dumps({"binding": {}}), encoding="utf-8")
+            with (
+                patch("speaker_id.training.cuda_pair_contract.validate_cuda_gain_config"),
+                patch("speaker_id.infrastructure.readiness.validate_readiness_for_execution"),
+                patch("speaker_id.training.cuda_pair_contract.prepare_cuda_execution",
+                      side_effect=RuntimeError("backend preparation reached")),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "backend preparation reached"):
+                    cuda.execute_cuda_gain_suite(root, root / "suite.json", {}, {}, {}, binding)
+
     def test_selector_excludes_historical_control_and_requires_both_folds(self):
         selected = {"frontend": "identity", "advanced_weight": 0.0, "calibration": {}}
         frozen = {

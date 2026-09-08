@@ -26,6 +26,7 @@ class C002ReadinessBindingTests(unittest.TestCase):
             "expected_gpu": "RTX 3090",
             "minimum_gpu_memory_gib": 20,
             "data_verification": {"mode": "installed_manifest_sha256"},
+            "mlflow_state_path": "artifacts/infrastructure/C002_preparation/mlflow_state.json",
         }
         self.write(self.config_path, self.config)
         self.write("src/sample.py", b"value = 1\n")
@@ -46,7 +47,7 @@ class C002ReadinessBindingTests(unittest.TestCase):
         }
         self.binding = {"experiment_id": "23", "experiment_name": "new-campp", "scope_id": "scope",
                         "project": "project", "tracking_endpoint": "https://tracking.example.test"}
-        self.write("artifacts/infrastructure/mlflow_state.json", {"binding": self.binding})
+        self.write(self.config["mlflow_state_path"], {"binding": self.binding})
         self.write(DEFAULT_EVIDENCE["instance"], {
             "status": "verified", "instance_id": 50288952, "verified_via": "vast_api_and_ssh",
             "hostname": "c002-test-host", "remote_workspace": str(self.root),
@@ -149,7 +150,23 @@ class C002ReadinessBindingTests(unittest.TestCase):
             "minimum_gpu_memory_gib": 20,
         })
         self.assertEqual(self.finding(report, "full_data_verification")["status"], "passed")
+        self.assertEqual(self.finding(report, "mlflow_roundtrip")["details"]["binding_state_path"],
+                         self.config["mlflow_state_path"])
         self.assertIn("VAST_INSTANCE_ID=50288952", report["next_command_after_user_start"])
+
+    def test_c002_binding_isolated_from_legacy_state(self):
+        self.write("artifacts/infrastructure/mlflow_state.json", {
+            "binding": {**self.binding, "experiment_id": "legacy"}
+        })
+        report = check_readiness(self.root, self.config_path)
+        self.assertEqual(report["status"], "ready", report["checks"])
+
+        self.write(self.config["mlflow_state_path"], {
+            "binding": {**self.binding, "experiment_id": "wrong"}
+        })
+        report = check_readiness(self.root, self.config_path)
+        self.assertEqual(self.finding(report, "mlflow_roundtrip")["status"], "blocked")
+        self.assertIn("binding changed", self.finding(report, "mlflow_roundtrip")["reason"])
 
     def test_marker_identity_mismatches_block_before_campp_evidence(self):
         cases = {
