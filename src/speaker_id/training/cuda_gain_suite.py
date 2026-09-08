@@ -225,7 +225,13 @@ def execute_cuda_gain_suite(root, config_path, suite, contract, source_config, b
 
     validate_cuda_gain_config(suite)
     root = Path(root).resolve()
-    validate_readiness_for_execution(root, contract)
+    expected_binding = root / "artifacts/infrastructure/C002_preparation/mlflow_state.json"
+    binding_path = require_c002_path(root, binding_path, require_existing=True)
+    require(binding_path == expected_binding.resolve(),
+            "C002 must use its isolated MLflow binding state")
+    validate_readiness_for_execution(
+        root, contract, root / "artifacts/infrastructure/C002_preparation/readiness.json"
+    )
     execution = prepare_cuda_execution(root, suite)
     binding = ExperimentBinding(**gain.read(binding_path)["binding"])
     output_root = require_c002_path(root, root / suite["output_root"])
