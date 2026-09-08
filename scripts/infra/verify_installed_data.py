@@ -127,9 +127,13 @@ def main() -> int:
     parser.add_argument("--workspace", type=Path, default=ROOT)
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
-    arguments = vars(parser.parse_args())
+    arguments = parser.parse_args()
     try:
-        result = verify_installed_data(**arguments)
+        result = verify_installed_data(
+            workspace=arguments.workspace,
+            config_path=arguments.config,
+            report=arguments.report,
+        )
     except Exception as error:
         print(json.dumps({"status": "failed", "error": str(error)}, ensure_ascii=False), file=sys.stderr)
         return 1
