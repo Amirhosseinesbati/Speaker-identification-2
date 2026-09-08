@@ -18,8 +18,8 @@ def backend():
         "torch_version": "2.10.0+cu128",
         "python_version": "3.12.3",
         "tensor_dtype": "float32",
-        "total_memory_bytes": 24 * 1024 ** 3,
-        "visible_total_memory_bytes": 24 * 1024 ** 3,
+        "total_memory_bytes": 23 * 1024 ** 3,
+        "visible_total_memory_bytes": 23 * 1024 ** 3,
         "free_memory_bytes": 12 * 1024 ** 3,
         "cudnn_enabled": True,
         "no_cpu_fallback": True,
@@ -46,6 +46,13 @@ class CUDAPairContractTests(unittest.TestCase):
             candidate[key] = value
             with self.subTest(key=key), self.assertRaises(ValueError):
                 cuda.validate_cuda_backend(candidate, cuda.FIXED)
+
+    def test_backend_capacity_floor_matches_reported_rtx_3090_memory(self):
+        candidate = backend()
+        cuda.validate_cuda_backend(candidate, cuda.FIXED)
+        candidate["visible_total_memory_bytes"] = 23 * 1024 ** 3 - 1
+        with self.assertRaisesRegex(ValueError, "declared GPU identity"):
+            cuda.validate_cuda_backend(candidate, cuda.FIXED)
 
     def test_identity_binds_new_launcher_and_declares_no_historical_parity_gate(self):
         contract = {

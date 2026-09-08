@@ -30,7 +30,7 @@ from speaker_id.training.fusion_suite import project_path
 TARGET_IDENTITY = {
     "vast_instance_id": 50288952,
     "gpu_name_contains": "RTX 3090",
-    "minimum_gpu_memory_gib": 24,
+    "minimum_gpu_memory_gib": 23,
     "minimum_free_memory_mib": 10240,
 }
 EXECUTION = {

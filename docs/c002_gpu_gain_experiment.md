@@ -26,7 +26,7 @@ uv run python scripts/score_gain_cuda.py --config configs/train/campp_gain_cuda_
 ```
 
 Actual extraction/scoring requires `--execute`, the C002 readiness contract, a
-visible matching RTX 3090 with at least 24 GiB capacity and 10 GiB free, and
+visible matching RTX 3090 with at least 23 GiB reported capacity and 10 GiB free, and
 `VAST_INSTANCE_ID=50288952`. CPU fallback, cache reuse, resume, encoder updates
 and embedding uploads to MLflow are rejected. On failure the partial C002 files
 remain as evidence and a new invocation must create a new C002 output directory.
