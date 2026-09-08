@@ -1,0 +1,139 @@
+{
+  "schema_version": 1,
+  "experiment_code": "S009",
+  "run_name": "S009-f004-advanced192-heldout-paired-reference",
+  "readiness_config": "configs/train/campp_coverage.json",
+  "output_root": "artifacts/training",
+  "source_adapted": {
+    "config": "configs/train/campp_finetune_head600.json",
+    "run": "artifacts/training/F004_20260907T211351Z_fa939cd0",
+    "parent_run_id": "a87bd6a800724f9f9963d9ee5b780bc1",
+    "signature": "a6ba74ad53257e1fed7f26afc3d3f9a634c040766cc392e61c8580e8413e74b7",
+    "git_commit": "ce13ca81705f40b96d110dd12b1a1fc2aed81298",
+    "export_manifest_paths": [
+      "artifacts/exports/F004_20260907T211351Z_fa939cd0.complete.manifest.json",
+      "artifacts/infrastructure/F004_verification/server_export_manifest.json"
+    ],
+    "export_manifest_sha256": "fcd14da17c0ec4d381998c7e2f632182c96e89eb2029df4b40b01f20f069a2a6",
+    "completed_steps": 1100,
+    "folds": {
+      "0": {
+        "child_run_id": "e854a866477a444ebb674637a19990a1",
+        "checkpoint_sha256": "e05801fc9a240a05735d6113f99ed7afc75c9edbc1bcafab2c93ded4cb4a2eec"
+      },
+      "1": {
+        "child_run_id": "0f5faecc19f24837827e4e8c8a0b354a",
+        "checkpoint_sha256": "036c1efdbfc9ad3ed32c0dc7f516d598c105414d4e430ee3144277a79594001f"
+      }
+    }
+  },
+  "source_advanced": {
+    "run": "artifacts/training/S007_20260907T224739Z_9be25eef",
+    "parent_run_id": "8ec9bae7ce504c82a38b9f367ff0c795",
+    "source_signature": "57c3b9b55597c575175a2153b4500d942ad896a8ac4211cfc17e0ec9e48b0d36",
+    "git_commit": "900426ccb06fd513c19a7db9ff55cd62de6d144e",
+    "children": {
+      "S007b": "e213361c82d24889b42d28d837d8f7cf",
+      "S007a": "f3551e9212304dd1bdfcbbb93e92a90d"
+    },
+    "export_manifest_paths": [
+      "artifacts/exports/S007_20260907T224739Z_9be25eef.complete.manifest.json",
+      "artifacts/infrastructure/S007_verification/server_export_manifest.json"
+    ],
+    "export_manifest_sha256": "c1fa440187e1e47dfdc20e95406cb5a5cce28256cacd526d9839b8f6330420b8"
+  },
+  "candidate_verification": {
+    "path": "artifacts/infrastructure/S007_verification/verification.json",
+    "sha256": "72b26897c3b69ef65cf0302ed60684232178c501c58732231641e6746b3accfb"
+  },
+  "control_adapted": {
+    "run": "artifacts/training/S006_20260907T223207Z_cc9270e9",
+    "parent_run_id": "a76e5ca3702e47e4afc879768ad090f4",
+    "git_commit": "900426ccb06fd513c19a7db9ff55cd62de6d144e",
+    "export_manifest_paths": [
+      "artifacts/exports/S006_20260907T223207Z_cc9270e9.complete.manifest.json",
+      "artifacts/infrastructure/S006_verification/server_export_manifest.json"
+    ],
+    "export_manifest_sha256": "0728f474c7723b1bcf77c2dc2559a03734a3fc966f5c52c819d972e903952b8c",
+    "recipe_id": "S006f",
+    "child_run_id": "6969f0cb5daf41c9add30902eeb8b937",
+    "verification": {
+      "path": "artifacts/infrastructure/S006_verification/verification.json",
+      "sha256": "cc92dcd7b0c4ce03869988ff6c2d7b4a84461b5fd8a73d52d9a6df5fa9b05474"
+    }
+  },
+  "prerequisite_fusion": {
+    "run": "artifacts/training/S008_20260907T233351Z_b35f3c28",
+    "parent_run_id": "63f25c9baebf4ec0a0907254ac8fce01",
+    "git_commit": "17f92bd83123834cc7af04f57d411b803f3ce5c6",
+    "export_manifest_paths": [
+      "artifacts/exports/S008_20260907T233351Z_b35f3c28.complete.manifest.json",
+      "artifacts/infrastructure/S008_verification/server_export_manifest.json"
+    ],
+    "export_manifest_sha256": "17dde36bbb88932eb042b80dd6fa1ca91768198395e0ef274c75feebab791f93",
+    "children": {
+      "S008c": "7f8e37733bee40798a36d49e62960bde",
+      "S008b": "52317ac3daab45ed9e80f2a0233c205a",
+      "S008a": "01970ea72fd54d0c9595b78deb08b14b"
+    },
+    "verification": {
+      "path": "artifacts/infrastructure/S008_verification/verification.json",
+      "sha256": "5b4f08c1dc5084f892826b3161f2b7bc5132c1e01c9c9039f42c8fd5c0719857"
+    }
+  },
+  "recipes": [
+    {
+      "id": "S009a",
+      "source": "adapted",
+      "protocol": "original_heldout_queries_expanded_gallery",
+      "control": "S006f"
+    },
+    {
+      "id": "S009b",
+      "source": "advanced",
+      "protocol": "leave_content_group_out",
+      "control": "S007b"
+    },
+    {
+      "id": "S009c",
+      "source": "advanced",
+      "protocol": "original_heldout_queries_expanded_gallery",
+      "control": null
+    },
+    {
+      "id": "S009d",
+      "source": "inner_selected_fusion",
+      "protocol": "original_heldout_queries_expanded_gallery",
+      "control": null
+    }
+  ],
+  "alphas": [
+    0.0,
+    0.25,
+    0.5,
+    0.75,
+    1.0
+  ],
+  "alpha_tie_order": [
+    0.0,
+    1.0,
+    0.25,
+    0.5,
+    0.75
+  ],
+  "unknown_weights": [
+    0.0,
+    0.25,
+    0.5,
+    0.75,
+    1.0
+  ],
+  "margin_weights": [
+    0.0,
+    0.5
+  ],
+  "threshold_candidates": 201,
+  "probability_temperature": 0.05,
+  "selection_policy": "Select alpha and gate only on original encoder-held-out query groups; exact S006f and full-protocol S007b controls precede mixtures. The matched advanced endpoint is not S007b.",
+  "execution_policy": "Manual dispatch only after independently verified S008c, S007b and S006f each remain below pooled OOF Macro-F1 0.965; no automatic chaining."
+}
