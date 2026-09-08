@@ -28,15 +28,28 @@ ops = [
     "xdg==6.0.0",
     "mlflow-skinny==3.7.0",
 ]
+postprocess = [
+    "scikit-learn==1.8.0",
+    "joblib==1.5.3",
+    "threadpoolctl==3.6.0",
+]
 
 [[tool.uv.index]]
 name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
+[[tool.uv.index]]
+name = "postprocess-pypi-mirror"
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+explicit = true
+
 [tool.uv.sources]
 torch = { index = "pytorch-cu128" }
 torchaudio = { index = "pytorch-cu128" }
+scikit-learn = { index = "postprocess-pypi-mirror" }
+joblib = { index = "postprocess-pypi-mirror" }
+threadpoolctl = { index = "postprocess-pypi-mirror" }
 
 [tool.uv]
 package = false
