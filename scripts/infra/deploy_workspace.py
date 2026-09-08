@@ -221,7 +221,7 @@ def main():
         remote(f"mkdir -p {q(workspace + '/' + evidence_relative)}")
         upload(marker_path, workspace + "/" + evidence_relative + "/instance.json")
     elif args.action == "bootstrap":
-        remote(f"cd {q(workspace)} && bash scripts/infra/bootstrap_server.sh")
+        remote(f"cd {q(workspace)} && EXPECTED_GIT_BRANCH={q(config['branch'])} bash scripts/infra/bootstrap_server.sh")
     elif args.action == "upload-assets":
         if verification_mode == "installed_manifest_sha256":
             # C002 receives only its model and a copied binding.  Raw data is

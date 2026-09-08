@@ -3,7 +3,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 test "$(uname -s)" = Linux
-test "$(git branch --show-current)" = develop
+expected_git_branch="${EXPECTED_GIT_BRANCH:-develop}"
+test "$(git branch --show-current)" = "$expected_git_branch"
 test -z "$(git status --porcelain --untracked-files=normal)"
 python3 -c 'import sys; assert sys.version_info[:2] == (3,12), "Python 3.12 is required"'
 python3 -m venv .venv-bootstrap
