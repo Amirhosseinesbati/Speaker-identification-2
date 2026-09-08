@@ -42,6 +42,19 @@ EXECUTION = {
     "no_cpu_fallback": True,
     "no_resume": True,
 }
+C002_SOURCE_CONFIG_DIFFERENCES = frozenset({
+    "experiment_code",
+    "run_name",
+    "hypothesis",
+    "output_root",
+    "seed",
+    "expected_vast_instance_id",
+    "expected_workspace",
+    "expected_gpu",
+    "minimum_gpu_memory_gib",
+    "mlflow_state_path",
+    "data_verification",
+})
 FIXED = {
     "schema_version": 1,
     "experiment_code": "C002",
@@ -75,6 +88,55 @@ FIXED = {
 
 def canonical(value):
     return json.dumps(value, sort_keys=True, allow_nan=False).encode()
+
+
+def verify_c002_source_compatibility(readiness_contract, historical_contract):
+    """Prove historical S008 inputs equal C002 inputs except infrastructure metadata."""
+    require(isinstance(readiness_contract, dict) and isinstance(historical_contract, dict),
+            "C002 source contracts must be objects")
+    exact_fields = ("model", "input_hashes", "code_hashes", "labels", "manifest", "folds", "roles")
+    require(all(name in readiness_contract and name in historical_contract for name in exact_fields)
+            and all(readiness_contract[name] == historical_contract[name] for name in exact_fields),
+            "Historical S008 material inputs, source code, or row order differ from C002 readiness")
+    readiness_config = readiness_contract.get("config")
+    historical_config = historical_contract.get("config")
+    require(isinstance(readiness_config, dict) and isinstance(historical_config, dict),
+            "C002 source contract configuration is missing")
+    differences = sorted(key for key in set(readiness_config) | set(historical_config)
+                         if key not in readiness_config or key not in historical_config
+                         or readiness_config[key] != historical_config[key])
+    require(set(differences).issubset(C002_SOURCE_CONFIG_DIFFERENCES),
+            "Historical S008 semantic configuration differs from C002 readiness")
+    readiness_semantic = {
+        key: value for key, value in readiness_config.items()
+        if key not in C002_SOURCE_CONFIG_DIFFERENCES
+    }
+    historical_semantic = {
+        key: value for key, value in historical_config.items()
+        if key not in C002_SOURCE_CONFIG_DIFFERENCES
+    }
+    require(readiness_semantic == historical_semantic,
+            "Historical S008 semantic configuration differs from C002 readiness")
+    changed = {
+        key: {
+            "historical_present": key in historical_config,
+            "readiness_present": key in readiness_config,
+            "historical_value": historical_config.get(key),
+            "readiness_value": readiness_config.get(key),
+        }
+        for key in differences
+    }
+    material = {name: readiness_contract[name] for name in exact_fields}
+    proof = {
+        "status": "passed",
+        "historical_contract_signature": historical_contract.get("signature"),
+        "readiness_contract_signature": readiness_contract.get("signature"),
+        "exact_fields": list(exact_fields),
+        "allowed_config_differences": changed,
+        "material_identity_sha256": hashlib.sha256(canonical(material)).hexdigest(),
+    }
+    proof["proof_sha256"] = hashlib.sha256(canonical(proof)).hexdigest()
+    return proof
 
 
 def validate_cuda_gain_config(suite):

@@ -220,6 +220,7 @@ def execute_cuda_gain_suite(root, config_path, suite, contract, source_config, b
         prepare_cuda_execution,
         require_c002_path,
         validate_cuda_gain_config,
+        verify_c002_source_compatibility,
     )
     from speaker_id.training.cuda_pair_worker import extract_cuda_pair_caches
 
@@ -272,8 +273,11 @@ def execute_cuda_gain_suite(root, config_path, suite, contract, source_config, b
         parent.verify_artifacts()
         parent.verify_remote_metadata()
         gain.write_json(output / "experiment_state.json", {"status": "running", "parent_run_id": parent.run_id})
+        source_release_sha = gain.file_sha256(inputs["source_release_config"])
+        gain.require(source_release_sha == suite["source_release_config_sha256"],
+                     "Selected S008 source config changed after C002 launch")
         sources = gain.load_sources(root, source_config, verify_audio=True)
-        gain.require(sources["contract"]["signature"] == contract["signature"], "Source changed after C002 readiness")
+        source_compatibility = verify_c002_source_compatibility(contract, sources["contract"])
         remote = gain._verify_remote_evidence(
             parent.client, binding, sources["remote_requests"], output / "verified_remote_evidence"
         )
@@ -283,6 +287,8 @@ def execute_cuda_gain_suite(root, config_path, suite, contract, source_config, b
             "raw_audio_sha_verified": True,
             "historical_control_only": "C002a",
             "historical_embedding_parity_required": False,
+            "source_release_config_sha256": source_release_sha,
+            "source_contract_compatibility": source_compatibility,
         })
         parent.add_artifact(output / "source_provenance.json")
         for name in ("suite_config", "source_release_config", "launcher"):

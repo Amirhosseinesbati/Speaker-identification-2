@@ -28,6 +28,80 @@ def backend():
 
 
 class CUDAPairContractTests(unittest.TestCase):
+    @staticmethod
+    def compatible_contracts():
+        semantic = {
+            "mode": "frozen_baseline",
+            "model_config": "configs/model/campp.json",
+            "manifest": "data/manifest.csv",
+            "folds": "data/folds.csv",
+            "roles": "data/roles.csv",
+            "label_map": "data/labels.json",
+            "inference": {"seconds": 180.0, "maximum_windows": 1},
+            "scoring": {"method": "normalized_mean_prototype"},
+            "fit": {"crop_seconds": 3.0},
+            "fold_ids": [0, 1],
+        }
+        historical = {
+            "signature": "a" * 64,
+            "config": {**semantic, "experiment_code": "B002", "run_name": "B002-control",
+                       "hypothesis": "historical", "output_root": "artifacts/training",
+                       "seed": 20260907, "expected_vast_instance_id": 50079023},
+            "model": {"weights_sha256": "1" * 64},
+            "input_hashes": {"manifest": "2" * 64, "model_config": "3" * 64},
+            "code_hashes": {"src/model.py": "4" * 64},
+            "labels": ["unknown", "speaker"],
+            "manifest": [{"audio_file": "a.mp3"}],
+            "folds": [{"audio_file": "a.mp3", "fold": "0"}],
+            "roles": [{"audio_file": "a.mp3", "role": "outer"}],
+        }
+        readiness = deepcopy(historical)
+        readiness["signature"] = "b" * 64
+        readiness["config"].update({
+            "experiment_code": "B002-C002",
+            "run_name": "B002-C002-control",
+            "hypothesis": "fresh infrastructure",
+            "output_root": "artifacts/training/C002",
+            "seed": 20260908,
+            "expected_vast_instance_id": 50288952,
+            "expected_workspace": "/workspace/Speaker-identification-2-c002",
+            "expected_gpu": "RTX 3090",
+            "minimum_gpu_memory_gib": 20,
+            "mlflow_state_path": "artifacts/infrastructure/C002_preparation/mlflow_state.json",
+            "data_verification": {"mode": "installed_manifest_sha256"},
+        })
+        return readiness, historical
+
+    def test_historical_source_allows_only_explicit_c002_infrastructure_differences(self):
+        readiness, historical = self.compatible_contracts()
+        proof = cuda.verify_c002_source_compatibility(readiness, historical)
+        self.assertEqual(proof["status"], "passed")
+        self.assertEqual(set(proof["allowed_config_differences"]), {
+            "experiment_code", "run_name", "hypothesis", "output_root", "seed",
+            "expected_vast_instance_id", "expected_workspace", "expected_gpu", "minimum_gpu_memory_gib",
+            "mlflow_state_path", "data_verification",
+        })
+        self.assertEqual(len(proof["material_identity_sha256"]), 64)
+        self.assertEqual(len(proof["proof_sha256"]), 64)
+
+    def test_historical_source_rejects_semantic_and_material_changes(self):
+        cases = (
+            ("semantic", lambda value: value["config"]["inference"].update(seconds=6.0)),
+            ("unknown_config", lambda value: value["config"].update(unregistered_field=True)),
+            ("input_hash", lambda value: value["input_hashes"].update(manifest="f" * 64)),
+            ("model", lambda value: value["model"].update(weights_sha256="f" * 64)),
+            ("code", lambda value: value["code_hashes"].update({"src/model.py": "f" * 64})),
+            ("missing_material", lambda value: value.pop("folds")),
+            ("labels", lambda value: value["labels"].reverse()),
+            ("row_order", lambda value: value["manifest"].append({"audio_file": "b.mp3"})),
+        )
+        for name, mutate in cases:
+            with self.subTest(name=name):
+                readiness, historical = self.compatible_contracts()
+                mutate(historical)
+                with self.assertRaises(ValueError):
+                    cuda.verify_c002_source_compatibility(readiness, historical)
+
     def test_exact_config_and_c001_output_are_rejected(self):
         root = Path(__file__).resolve().parents[1]
         suite = deepcopy(cuda.FIXED)
