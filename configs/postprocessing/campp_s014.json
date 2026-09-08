@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "experiment_code": "S014",
+  "run_name": "S014-campp-powered-design-prior-alignment",
+  "output_root": "artifacts/training",
+  "source_package_config": "configs/package/campp_selected.json",
+  "source_package_config_sha256": "1f0281a98f60ccfd7c309a67a2dec3936b1c787f3f8b26d43b53f743eb17ae2b",
+  "source_verification": "artifacts/infrastructure/S008_verification/verification.json",
+  "source_verification_sha256": "5b4f08c1dc5084f892826b3161f2b7bc5132c1e01c9c9039f42c8fd5c0719857",
+  "prior_context": {
+    "run_path": "artifacts/training/S013_20260908T154916Z_0c36060b",
+    "parent_run_id": "45759a6510ee4783863511c1145d0a9b",
+    "execution_git_commit": "9d72ffb30393e4c3a32327d327bbdfef1eb01808",
+    "verification_path": "artifacts/infrastructure/S013_verification/S013_20260908T154916Z_0c36060b/verification.json",
+    "verification_sha256": "028c45e8486c317aba5c5ed0f8d65402c2a77d0dad1731384287e7a9f69cd077",
+    "report_sha256": "e6e55e00ebdcafb39be040dc41f9a644666c03607e43a7a9786cff296c9898bd"
+  },
+  "device": "cuda",
+  "alignment_device": "cpu",
+  "cpu_threads": 4,
+  "probability_temperature": 0.05,
+  "alignment": {
+    "schema_version": 1,
+    "design_unknown_prior": 0.5,
+    "design_known_prior": 0.0011210762331838565,
+    "unknown_strength": 0.0,
+    "known_strength": 0.5,
+    "epsilon": 1e-12
+  },
+  "reconstruction_control": {
+    "folds": {
+      "0": {
+        "path": "artifacts/training/S008_20260907T233351Z_b35f3c28/S008c/fold_0/outer_probabilities.npz",
+        "sha256": "bdb53df3792e9305b9a9eac6dd1b0f335a597b26b96a61ccd90ae5760685600a",
+        "powered_prediction_array_sha256": "b188dcf480abac70508766d12ef95d5b3264e20dcfb0f19e3e4b595abff404c1"
+      },
+      "1": {
+        "path": "artifacts/training/S008_20260907T233351Z_b35f3c28/S008c/fold_1/outer_probabilities.npz",
+        "sha256": "d08a211d42df193af367019859ccbd8792a8d41f079a576a0591006e069fcfdc",
+        "powered_prediction_array_sha256": "e63b5c8d5757691c9bbf717f1c895c605c0bcdea1f2bcc122545760476daa209"
+      }
+    },
+    "maximum_probability_absolute_difference": 1e-5,
+    "require_exact_powered_predictions": true
+  },
+  "bootstrap": {
+    "kind": "true_class_stratified_within_label_content_group_paired",
+    "seed": 20260908,
+    "replicates": 5000,
+    "lower_quantile": 0.025,
+    "upper_quantile": 0.975
+  },
+  "promotion": {
+    "minimum_pooled_macro_f1_gain": 0.0015,
+    "minimum_each_fold_macro_f1_gain": 0.0,
+    "minimum_pooled_accuracy_gain": 0.0,
+    "maximum_unknown_to_known_increase": 5,
+    "maximum_known_to_other_known_increase": 2,
+    "minimum_bootstrap_lower_bound": -0.001,
+    "require_cpu_cuda_prediction_parity": true
+  },
+  "baseline_numerical_policy": {
+    "threshold_atol": 1e-6,
+    "probability_atol": 1e-5,
+    "relative_tolerance": 0.0,
+    "rationale": "Preserve the fixed S008c Linux-to-Windows float32 allowance; no relaxation."
+  },
+  "selection_policy": "One fixed powered-ratio design-prior policy only. The assumed unknown row mass 0.5 and uniform known mass 0.5/446 are not organizer-guaranteed hidden-batch frequencies. Mask each own-fold speaker_id before reconstruction, then build and hash both unlabeled outer-batch outputs before outer truth scoring. No graph, query expansion, ECAPA, WCCN, threshold grid or policy search occurs. The promotion gates authorize only a later release candidate and do not turn repeated OOF into independent confirmation.",
+  "research_notes": "docs/s014_protocol.fa.md"
+}
