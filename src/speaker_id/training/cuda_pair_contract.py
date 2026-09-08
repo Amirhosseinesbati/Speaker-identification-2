@@ -14,6 +14,10 @@ from pathlib import Path
 import platform
 
 from speaker_id.audio.gain import GAIN_POLICY, IDENTITY_POLICY
+from speaker_id.infrastructure.numerical_environment import (
+    NUMERICAL_THREAD_ENVIRONMENT,
+    require_c002_preimport_thread_receipt,
+)
 from speaker_id.models.campp import file_sha256
 from speaker_id.training.gain_suite import (
     ALPHAS,
@@ -41,6 +45,7 @@ EXECUTION = {
     "progress_every_pairs": 50,
     "no_cpu_fallback": True,
     "no_resume": True,
+    "thread_environment": NUMERICAL_THREAD_ENVIRONMENT,
 }
 C002_SOURCE_CONFIG_DIFFERENCES = frozenset({
     "experiment_code",
@@ -190,6 +195,10 @@ def load_cuda_gain_inputs(root, suite):
 def capture_cuda_backend(suite):
     """Fail closed before any encoder is loaded; CUDA is the only permitted device."""
     validate_cuda_gain_config(suite)
+    preimport_receipt = require_c002_preimport_thread_receipt()
+    thread_environment = preimport_receipt["thread_environment"]
+    require(thread_environment == suite["execution"]["thread_environment"] == NUMERICAL_THREAD_ENVIRONMENT,
+            "C002 numerical thread environment is not pinned before CUDA execution")
     import torch
 
     target = suite["target_identity"]
@@ -223,6 +232,10 @@ def capture_cuda_backend(suite):
         "cudnn_enabled": bool(torch.backends.cudnn.enabled),
         "no_cpu_fallback": True,
         "encoder_updates": 0,
+        "thread_environment": thread_environment,
+        "preimport_numerical_modules_absent": preimport_receipt[
+            "numerical_modules_absent_before_attestation"
+        ],
     }
     validate_cuda_backend(backend, suite)
     return backend
@@ -233,13 +246,16 @@ def validate_cuda_backend(backend, suite):
     fields = {
         "schema_version", "device", "device_index", "device_name", "cuda_runtime", "torch_version",
         "python_version", "tensor_dtype", "total_memory_bytes", "visible_total_memory_bytes",
-        "free_memory_bytes", "cudnn_enabled", "no_cpu_fallback", "encoder_updates",
+        "free_memory_bytes", "cudnn_enabled", "no_cpu_fallback", "encoder_updates", "thread_environment",
+        "preimport_numerical_modules_absent",
     }
     require(type(backend) is dict and set(backend) == fields, "Incomplete C002 CUDA backend evidence")
     require(backend["schema_version"] == 1 and backend["device"] == "cuda"
             and type(backend["device_index"]) is int and backend["device_index"] >= 0
             and backend["tensor_dtype"] == "float32" and backend["no_cpu_fallback"] is True
-            and backend["encoder_updates"] == 0, "C002 must use one frozen FP32 CUDA backend")
+            and backend["encoder_updates"] == 0
+            and backend["thread_environment"] == NUMERICAL_THREAD_ENVIRONMENT,
+            "C002 must use one frozen FP32 CUDA backend with pinned numerical threads")
     target = suite["target_identity"]
     require(target["gpu_name_contains"].lower() in backend["device_name"].lower()
             and backend["total_memory_bytes"] >= target["minimum_gpu_memory_gib"] * 1024 ** 3
@@ -252,7 +268,9 @@ def validate_cuda_backend(backend, suite):
     require(all(type(backend[name]) is int and backend[name] > 0
                 for name in ("total_memory_bytes", "visible_total_memory_bytes", "free_memory_bytes")),
             "CUDA memory evidence must be positive integer bytes")
-    require(type(backend["cudnn_enabled"]) is bool, "CUDA backend flags must be booleans")
+    require(type(backend["cudnn_enabled"]) is bool
+            and backend["preimport_numerical_modules_absent"] is True,
+            "CUDA backend flags and pre-import receipt must be exact booleans")
 
 
 def prepare_cuda_execution(root, suite):

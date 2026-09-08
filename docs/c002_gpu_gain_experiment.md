@@ -25,8 +25,28 @@ The launcher defaults to metadata validation:
 uv run python scripts/score_gain_cuda.py --config configs/train/campp_gain_cuda_c002.json
 ```
 
+The executable server command supplies the pinned environment before Python:
+
+```bash
+OPENBLAS_NUM_THREADS=4 OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 \
+VAST_INSTANCE_ID=50288952 .venv/bin/python scripts/score_gain_cuda.py \
+  --config configs/train/campp_gain_cuda_c002.json --execute
+```
+
 Actual extraction/scoring requires `--execute`, the C002 readiness contract, a
 visible matching RTX 3090 with at least 23 GiB reported capacity and 10 GiB free, and
-`VAST_INSTANCE_ID=50288952`. CPU fallback, cache reuse, resume, encoder updates
+`VAST_INSTANCE_ID=50288952`. `OPENBLAS_NUM_THREADS`, `OMP_NUM_THREADS`, and
+`MKL_NUM_THREADS` must each equal `4` before Python imports NumPy. This preserves
+the exact historical S008c alpha/gate control across CPU hosts; the launcher and
+captured backend evidence reject an unpinned numerical environment. CPU fallback,
+cache reuse, resume, encoder updates
 and embedding uploads to MLflow are rejected. On failure the partial C002 files
 remain as evidence and a new invocation must create a new C002 output directory.
+
+Server-to-local retention is promotion gated. Failed runs, feature caches,
+embeddings, intermediate checkpoints, and complete run directories stay on the
+server. A local copy is made only for a fully evaluated candidate that either
+passes the declared promotion rule or has quantified complementary errors needed
+by a predeclared follow-up. Even then, only the selected weight when one exists,
+its resolved configuration, hashes/verification receipt, and the minimal offline
+leaderboard package are copied; bulk training artifacts are not copied.

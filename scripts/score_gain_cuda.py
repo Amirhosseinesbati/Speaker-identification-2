@@ -12,10 +12,6 @@ sys.path.insert(0, str(ROOT / "src"))
 
 
 def main():
-    from speaker_id.training.cuda_gain_suite import execute_cuda_gain_suite
-    from speaker_id.training.cuda_pair_contract import load_cuda_gain_inputs
-    from speaker_id.training.fusion_suite import project_path
-
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument(
@@ -26,6 +22,16 @@ def main():
     )
     parser.add_argument("--execute", action="store_true")
     args = parser.parse_args()
+    if args.execute:
+        from speaker_id.infrastructure.numerical_environment import (
+            attest_c002_preimport_thread_environment,
+        )
+        attest_c002_preimport_thread_environment()
+
+    from speaker_id.training.cuda_gain_suite import execute_cuda_gain_suite
+    from speaker_id.training.cuda_pair_contract import load_cuda_gain_inputs
+    from speaker_id.training.fusion_suite import project_path
+
     path = project_path(ROOT, args.config, "configs/train")
     suite = json.loads(path.read_text(encoding="utf-8"))
     contract, source_config, _ = load_cuda_gain_inputs(ROOT, suite)

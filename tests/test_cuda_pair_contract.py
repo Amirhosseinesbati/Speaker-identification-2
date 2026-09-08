@@ -24,6 +24,8 @@ def backend():
         "cudnn_enabled": True,
         "no_cpu_fallback": True,
         "encoder_updates": 0,
+        "thread_environment": dict(cuda.NUMERICAL_THREAD_ENVIRONMENT),
+        "preimport_numerical_modules_absent": True,
     }
 
 
@@ -115,11 +117,18 @@ class CUDAPairContractTests(unittest.TestCase):
     def test_backend_rejects_cpu_fallback_and_wrong_gpu_identity(self):
         cuda.validate_cuda_backend(backend(), cuda.FIXED)
         for key, value in (("device", "cpu"), ("no_cpu_fallback", False), ("device_name", "A100"),
-                           ("free_memory_bytes", 1), ("encoder_updates", 1)):
+                           ("free_memory_bytes", 1), ("encoder_updates", 1),
+                           ("thread_environment", {**cuda.NUMERICAL_THREAD_ENVIRONMENT,
+                                                   "OPENBLAS_NUM_THREADS": "8"}),
+                           ("preimport_numerical_modules_absent", False)):
             candidate = backend()
             candidate[key] = value
             with self.subTest(key=key), self.assertRaises(ValueError):
                 cuda.validate_cuda_backend(candidate, cuda.FIXED)
+
+    def test_direct_backend_capture_requires_official_preimport_receipt(self):
+        with self.assertRaisesRegex(RuntimeError, "pre-import numerical environment receipt"):
+            cuda.capture_cuda_backend(cuda.FIXED)
 
     def test_backend_capacity_floor_matches_reported_rtx_3090_memory(self):
         candidate = backend()
