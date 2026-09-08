@@ -150,7 +150,7 @@ class C002ReadinessBindingTests(unittest.TestCase):
             "minimum_gpu_memory_gib": 20,
         })
         self.assertEqual(self.finding(report, "full_data_verification")["status"], "passed")
-        self.assertEqual(self.finding(report, "mlflow_roundtrip")["details"]["binding_state_path"],
+        self.assertEqual(self.finding(report, "mlflow_roundtrip")["detail"]["binding_state_path"],
                          self.config["mlflow_state_path"])
         self.assertIn("VAST_INSTANCE_ID=50288952", report["next_command_after_user_start"])
 
