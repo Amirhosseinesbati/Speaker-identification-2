@@ -1,0 +1,173 @@
+{
+  "schema_version": 1,
+  "experiment_code": "S011",
+  "run_name": "S011-campp-local-postprocessing",
+  "output_root": "artifacts/training",
+  "source_package_config": "configs/package/campp_selected.json",
+  "source_package_config_sha256": "1f0281a98f60ccfd7c309a67a2dec3936b1c787f3f8b26d43b53f743eb17ae2b",
+  "source_verification": "artifacts/infrastructure/S008_verification/verification.json",
+  "source_verification_sha256": "5b4f08c1dc5084f892826b3161f2b7bc5132c1e01c9c9039f42c8fd5c0719857",
+  "device": "cuda",
+  "cpu_threads": 4,
+  "probability_temperature": 0.05,
+  "candidates": [
+    {
+      "id": "top2_025",
+      "family": "robust_pool",
+      "kind": "top2",
+      "blend": 0.25
+    },
+    {
+      "id": "top2_050",
+      "family": "robust_pool",
+      "kind": "top2",
+      "blend": 0.5
+    },
+    {
+      "id": "lme_05_25",
+      "family": "robust_pool",
+      "kind": "logmeanexp",
+      "temperature": 0.05,
+      "blend": 0.25
+    },
+    {
+      "id": "lme_05_50",
+      "family": "robust_pool",
+      "kind": "logmeanexp",
+      "temperature": 0.05,
+      "blend": 0.5
+    },
+    {
+      "id": "lme_10_25",
+      "family": "robust_pool",
+      "kind": "logmeanexp",
+      "temperature": 0.1,
+      "blend": 0.25
+    },
+    {
+      "id": "lme_10_50",
+      "family": "robust_pool",
+      "kind": "logmeanexp",
+      "temperature": 0.1,
+      "blend": 0.5
+    },
+    {
+      "id": "unknown_top3_25",
+      "family": "unknown_pool",
+      "kind": "unknown_top3",
+      "blend": 0.25
+    },
+    {
+      "id": "unknown_top3_50",
+      "family": "unknown_pool",
+      "kind": "unknown_top3",
+      "blend": 0.5
+    },
+    {
+      "id": "density_50_50",
+      "family": "density",
+      "kind": "density",
+      "cohort_topk": 50,
+      "beta": 0.5
+    },
+    {
+      "id": "density_50_100",
+      "family": "density",
+      "kind": "density",
+      "cohort_topk": 50,
+      "beta": 1.0
+    },
+    {
+      "id": "density_200_50",
+      "family": "density",
+      "kind": "density",
+      "cohort_topk": 200,
+      "beta": 0.5
+    },
+    {
+      "id": "density_200_100",
+      "family": "density",
+      "kind": "density",
+      "cohort_topk": 200,
+      "beta": 1.0
+    },
+    {
+      "id": "asnorm_50",
+      "family": "asnorm",
+      "kind": "asnorm",
+      "cohort_topk": 50,
+      "std_floor": 0.02
+    },
+    {
+      "id": "asnorm_200",
+      "family": "asnorm",
+      "kind": "asnorm",
+      "cohort_topk": 200,
+      "std_floor": 0.02
+    },
+    {
+      "id": "late_fusion",
+      "family": "late_fusion",
+      "kind": "late_fusion"
+    },
+    {
+      "id": "quality_ridge_0.01",
+      "family": "quality_gate",
+      "kind": "quality_gate",
+      "penalty": 0.01,
+      "alphas": [
+        0.5,
+        0.75
+      ],
+      "group_folds": 3,
+      "target": "top_known_identity_correct",
+      "loss_weighting": "binary_balanced",
+      "meta_cv_scope": "logistic_coefficients_only_shared_permitted_reference_gallery"
+    },
+    {
+      "id": "quality_ridge_0.1",
+      "family": "quality_gate",
+      "kind": "quality_gate",
+      "penalty": 0.1,
+      "alphas": [
+        0.5,
+        0.75
+      ],
+      "group_folds": 3,
+      "target": "top_known_identity_correct",
+      "loss_weighting": "binary_balanced",
+      "meta_cv_scope": "logistic_coefficients_only_shared_permitted_reference_gallery"
+    },
+    {
+      "id": "quality_ridge_1.0",
+      "family": "quality_gate",
+      "kind": "quality_gate",
+      "penalty": 1.0,
+      "alphas": [
+        0.5,
+        0.75
+      ],
+      "group_folds": 3,
+      "target": "top_known_identity_correct",
+      "loss_weighting": "binary_balanced",
+      "meta_cv_scope": "logistic_coefficients_only_shared_permitted_reference_gallery"
+    }
+  ],
+  "selection_policy": "Freeze the complete candidate grid before execution; select alpha, postprocessor and gate using outer-training group-excluded calibration only. Reproduce both original S008c folds before any new outer evaluation. The all-family INNER selector is the primary comparison; individual family outer results are exploratory, never an untouched-test guarantee.",
+  "limitations": [
+    "Repeated development OOF is not a hidden leaderboard or independent final test.",
+    "No encoder update, no new audio extraction or test-time transduction.",
+    "All cohort statistics exclude the query whole content group, including reference-side normalization.",
+    "Quality gate uses grouped threefold out-of-fit calibration logits for threshold choice, then refits the gate on permitted inner data only.",
+    "Final release requires a separately calibrated payload and representative offline QA; final-fit scores are never OOF.",
+    "Quality meta folds hold out logistic coefficient fitting only; their base features share permitted outer-training references. This is not fully nested end-to-end score generation."
+  ],
+  "research_notes": "reports/research/postprocessing_20260908/research_notes.md",
+  "local_readiness": "artifacts/infrastructure/S011_preparation/local_cuda_readiness.json",
+  "baseline_numerical_policy": {
+    "threshold_atol": 1e-06,
+    "probability_atol": 1e-05,
+    "relative_tolerance": 0.0,
+    "rationale": "Linux-to-Windows float32 BLAS may differ; all decisions, metric values, selected coefficients, and curve inner F1 remain exact."
+  }
+}
