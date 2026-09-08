@@ -23,12 +23,13 @@ DIRECTORIES = [
     'artifacts/training/S007_20260907T224739Z_9be25eef',
     'artifacts/training/S008_20260907T233351Z_b35f3c28',
     'artifacts/models/campp', 'artifacts/models/campp_advanced',
-    'artifacts/infrastructure/S007_verification',
-    'artifacts/infrastructure/S008_verification',
-    'artifacts/infrastructure/S011_verification/S011_20260908T114324Z_4d842981',
     'reports/research/decision_postprocessing_20260908',
 ]
 FILES = [
+    'artifacts/infrastructure/S007_verification/server_export_manifest.json',
+    'artifacts/infrastructure/S008_verification/server_export_manifest.json',
+    'artifacts/infrastructure/S008_verification/verification.json',
+    'artifacts/infrastructure/S011_verification/S011_20260908T114324Z_4d842981/verification.json',
     'artifacts/infrastructure/mlflow_state.json',
     'artifacts/infrastructure/S012_preparation/dependency_audit.json',
     'artifacts/infrastructure/S012_preparation/sklearn_install_verification.json',
@@ -87,7 +88,10 @@ def populate(destination, commit):
         elif mode == 'copy':
             shutil.copyfile(source, target)
         else:
-            os.link(source, target)
+            # CreateHardLinkW needs explicit long-path syntax for deeply nested
+            # historical tracking files even when normal Path reads succeed.
+            prefix = '\\\\?\\' if os.name == 'nt' else ''
+            os.link(prefix + str(source), prefix + str(target))
         if digest(target) != expected:
             raise ValueError('Isolated local input hash differs: ' + relative.as_posix())
         receipt.append({'path': relative.as_posix(), 'bytes': source.stat().st_size,
