@@ -9,6 +9,11 @@ if [ "$#" -ne 1 ]; then
     exit 2
 fi
 case "$1" in
+    configs/train/campp_gain.json)
+        CONFIG_PATH=$1
+        ENTRYPOINT=scripts/score_gain.py
+        EXECUTION_FLAG=--execute
+        ;;
     configs/train/campp_adapted_candidate_fusion.json)
         CONFIG_PATH=$1
         ENTRYPOINT=scripts/score_adapted_candidate_fusion.py
