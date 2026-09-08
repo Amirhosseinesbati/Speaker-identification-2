@@ -229,8 +229,10 @@ def execute_pilot(root, config_path, pilot, contract, source_config):
                 write_json(progress_path, {'status':'profiling','completed_pairs':len(records),'records':records})
                 tracker.add_artifact(progress_path, f'progress/{len(records):02d}.json')
                 tracking_tick = time.monotonic()
-                tracker.flush(strict=True)
-                progress_tracking_seconds += time.monotonic()-tracking_tick
+                try:
+                    tracker.flush(strict=True)
+                finally:
+                    progress_tracking_seconds += time.monotonic()-tracking_tick
                 print(json.dumps({'stage':'cpu_pair','completed':len(records),'audio_file':row['audio_file'],'frontend':frontend,'seconds':elapsed}),flush=True)
                 check_deadline(started, pilot['max_elapsed_seconds'])
         after = {name: encoder_state_sha256(model) for name,model in encoders.items()}
