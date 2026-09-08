@@ -28,5 +28,6 @@
   "minimum_disk_free_gib": 10,
   "selection": "fixed first/middle/last, first zero, shortest/longest nonzero, lowest nonzero RMS; no labels",
   "output_root": "artifacts/infrastructure/cpu_pilots",
-  "encoder_updates": 0
+  "encoder_updates": 0,
+  "mlflow_payload": "configs_source_hashes_reports_and_scalar_metrics_no_embeddings"
 }

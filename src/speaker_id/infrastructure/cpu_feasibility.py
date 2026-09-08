@@ -27,7 +27,8 @@ FIXED = {'schema_version': 1, 'experiment_code': 'CP001', 'run_name': 'CP001-fro
     'source_suite': 'configs/train/campp_gain.json', 'inference': {'seconds': 180.0, 'maximum_windows': 1},
     'gain_policy': GAIN_POLICY, 'minimum_memory_headroom_gib': 8, 'minimum_disk_free_gib': 10,
     'selection': 'fixed first/middle/last, first zero, shortest/longest nonzero, lowest nonzero RMS; no labels',
-    'output_root': 'artifacts/infrastructure/cpu_pilots', 'encoder_updates': 0}
+    'output_root': 'artifacts/infrastructure/cpu_pilots', 'encoder_updates': 0,
+    'mlflow_payload': 'configs_source_hashes_reports_and_scalar_metrics_no_embeddings'}
 
 
 def require(condition, message):
@@ -223,7 +224,6 @@ def execute_pilot(root, config_path, pilot, contract, source_config):
                     'vectors':{n:{'dimension':int(v.size),'dtype':str(v.dtype),'finite':True,'norm':float(np.linalg.norm(v))} for n,v in vectors.items()},
                     'cache_file':path.name,'cache_sha256':file_sha256(path),'bytes':path.stat().st_size})
                 write_json(output/'progress.json', {'status':'profiling','records':records})
-                tracker.add_artifact(path)
                 tracker.log_metrics({f'{frontend}/pair_seconds':elapsed,'completed_pairs':len(records)}, step=len(records),sync=False)
                 progress_path = output/'progress'/f'{len(records):02d}.json'
                 write_json(progress_path, {'status':'profiling','completed_pairs':len(records),'records':records})
@@ -249,6 +249,7 @@ def execute_pilot(root, config_path, pilot, contract, source_config):
             'weight_file_sha256_before':weights_before,'weight_file_sha256_after':weights_after,
             'records':records,'estimates':estimate_runtime(contract['manifest'],records,capacity),
             'encoder_updates':0,'recognition_scoring_or_calibration':False,'gpu_health_claim':False,
+            'embedding_artifacts_uploaded':False,
             'deadline_scope':'600-second soft profiling budget checked between cases, including live progress tracking; setup and final tracking excluded; an in-flight native call may overrun'}
         write_json(output/'pilot_report.json', report); tracker.add_artifact(output/'pilot_report.json')
         tracker.write_report(report); tracker.flush(strict=True)
