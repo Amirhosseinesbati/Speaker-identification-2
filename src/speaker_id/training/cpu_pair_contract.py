@@ -121,6 +121,19 @@ def prepare_cpu_execution(root, suite):
         'pilot_vectors_reused':False,'estimate_is_not_a_runtime_guarantee':True}}
 
 
+def static_torch_build(torch_root, extension_path, wheel_metadata):
+    """Hash installed CPU implementation files without a runtime CUDA probe."""
+    torch_root,extension_path=Path(torch_root).resolve(),Path(extension_path).resolve()
+    require(extension_path.is_relative_to(torch_root), 'Torch extension must belong to the imported package')
+    paths=[torch_root/'version.py',extension_path,torch_root/'lib/libtorch_cpu.so']
+    require(len(set(paths))==3 and all(p.is_file() and not p.is_symlink() for p in paths),
+        'Complete installed CPU Torch build files are required')
+    require(isinstance(wheel_metadata,str) and wheel_metadata.strip(), 'Torch wheel metadata is missing')
+    return {'method':'installed_cpu_files_and_wheel_metadata_sha256_v1',
+        'files':{p.relative_to(torch_root).as_posix():file_sha256(p) for p in paths},
+        'wheel_metadata_sha256':hashlib.sha256(wheel_metadata.encode()).hexdigest()}
+
+
 def capture_cpu_backend():
     import torch
     import soundfile
@@ -133,10 +146,12 @@ def capture_cpu_backend():
     with contextlib.redirect_stdout(numpy_config):
         np.show_config()
     versions={name:importlib.metadata.version(name) for name in ('numpy','scipy','soundfile','torch','torchaudio')}
+    build=static_torch_build(Path(torch.__file__).parent,torch._C.__file__,
+        importlib.metadata.distribution('torch').read_text('WHEEL'))
     result={'schema_version':1,'device':'cpu','tensor_dtype':'float32','worker_count':1,
         'torch_intraop_threads':torch.get_num_threads(),'torch_interop_threads':torch.get_num_interop_threads(),
         'python_version':platform.python_version(),'versions':versions,'libsndfile_version':soundfile.__libsndfile_version__,
-        'torch_build_sha256':hashlib.sha256(torch.__config__.show().encode()).hexdigest(),
+        'torch_build_manifest':build,'torch_build_sha256':hashlib.sha256(canonical(build)).hexdigest(),
         'numpy_build_sha256':hashlib.sha256(numpy_config.getvalue().encode()).hexdigest(),
         'cpu_capability':torch.backends.cpu.get_cpu_capability(), 'mkldnn_enabled':bool(torch.backends.mkldnn.enabled),
         'deterministic_algorithms_enabled':torch.are_deterministic_algorithms_enabled(),
@@ -148,7 +163,7 @@ def capture_cpu_backend():
 
 def validate_backend(backend):
     fields={'schema_version','device','tensor_dtype','worker_count','torch_intraop_threads','torch_interop_threads',
-        'python_version','versions','libsndfile_version','torch_build_sha256','numpy_build_sha256','cpu_capability',
+        'python_version','versions','libsndfile_version','torch_build_manifest','torch_build_sha256','numpy_build_sha256','cpu_capability',
         'mkldnn_enabled','deterministic_algorithms_enabled','thread_environment','encoder_updates','cuda_queried'}
     require(set(backend)==fields and backend['schema_version']==1 and backend['device']=='cpu'
         and backend['tensor_dtype']=='float32' and backend['worker_count']==1
@@ -165,6 +180,17 @@ def validate_backend(backend):
     for key in ('torch_build_sha256','numpy_build_sha256'):
         require(isinstance(backend[key],str) and len(backend[key])==64 and all(c in '0123456789abcdef' for c in backend[key]),
             'Invalid CPU build digest')
+    build=backend['torch_build_manifest']
+    require(type(build) is dict and set(build)=={'method','files','wheel_metadata_sha256'}
+        and build['method']=='installed_cpu_files_and_wheel_metadata_sha256_v1'
+        and type(build['files']) is dict and len(build['files'])==3
+        and {'version.py','lib/libtorch_cpu.so'}.issubset(build['files'])
+        and all(isinstance(k,str) and not Path(k).is_absolute() and '..' not in Path(k).parts
+                and '\\' not in k and ':' not in k for k in build['files'])
+        and all(isinstance(v,str) and len(v)==64 and all(c in '0123456789abcdef' for c in v)
+                for v in [*build['files'].values(),build['wheel_metadata_sha256']])
+        and hashlib.sha256(canonical(build)).hexdigest()==backend['torch_build_sha256'],
+        'Installed CPU build manifest must match its signed digest')
 
 
 def build_cpu_identity(root,suite,contract,sources,frontend,backend):

@@ -4,16 +4,20 @@ import hashlib
 import json
 from pathlib import Path
 import unittest
+import tempfile
 from unittest.mock import patch
 
 from speaker_id.training import cpu_pair_contract as cpu
 
 
 def backend():
+    build={'method':'installed_cpu_files_and_wheel_metadata_sha256_v1',
+        'files':{'version.py':'a'*64,'_C.so':'b'*64,'lib/libtorch_cpu.so':'c'*64},'wheel_metadata_sha256':'d'*64}
     return {'schema_version':1,'device':'cpu','tensor_dtype':'float32','worker_count':1,
         'torch_intraop_threads':4,'torch_interop_threads':1,'python_version':'3.12.3',
         'versions':{k:'1.0' for k in ('numpy','scipy','soundfile','torch','torchaudio')},
-        'libsndfile_version':'1.2.0','torch_build_sha256':'a'*64,'numpy_build_sha256':'b'*64,
+        'libsndfile_version':'1.2.0','torch_build_manifest':build,
+        'torch_build_sha256':hashlib.sha256(cpu.canonical(build)).hexdigest(),'numpy_build_sha256':'b'*64,
         'cpu_capability':'AVX2','mkldnn_enabled':True,'deterministic_algorithms_enabled':False,
         'thread_environment':{k:'4' for k in ('OMP_NUM_THREADS','MKL_NUM_THREADS','OPENBLAS_NUM_THREADS')},
         'encoder_updates':0,'cuda_queried':False}
@@ -35,6 +39,22 @@ def pilot():
 
 
 class CPUContractTests(unittest.TestCase):
+    def test_static_build_hash_detects_cpu_binary_change_without_loading_torch(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);(root/'lib').mkdir()
+            for name in ('version.py','_C.so','lib/libtorch_cpu.so'):(root/name).write_bytes(name.encode())
+            first=cpu.static_torch_build(root,root/'_C.so','Wheel-Version: 1.0')
+            (root/'lib/libtorch_cpu.so').write_bytes(b'changed compiled CPU implementation')
+            self.assertNotEqual(first,cpu.static_torch_build(root,root/'_C.so','Wheel-Version: 1.0'))
+            with self.assertRaises(ValueError):cpu.static_torch_build(root,root/'_C.so','')
+            with self.assertRaises(ValueError):cpu.static_torch_build(root,root.parent/'outside.so','metadata')
+            (root/'lib/libtorch_cpu.so').unlink()
+            with self.assertRaises(ValueError):cpu.static_torch_build(root,root/'_C.so','metadata')
+
+    def test_backend_rejects_changed_manifest_even_with_unchanged_outer_digest(self):
+        changed=backend();changed['torch_build_manifest']['files']['lib/libtorch_cpu.so']='e'*64
+        with self.assertRaises(ValueError):cpu.validate_backend(changed)
+
     def test_fixed_config_matches_file_and_disallows_backend_search_or_extra_fields(self):
         root=Path(__file__).resolve().parents[1]
         cpu.validate_cpu_gain_config(json.loads((root/'configs/train/campp_gain_cpu.json').read_text()))
