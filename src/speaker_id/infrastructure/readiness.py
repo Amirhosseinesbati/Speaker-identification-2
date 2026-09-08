@@ -9,8 +9,9 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import importlib.metadata
 import json
+import math
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import platform
 import re
 import shutil
@@ -49,6 +50,71 @@ def _package_versions() -> dict:
     return {distribution.metadata["Name"]: distribution.version
             for distribution in importlib.metadata.distributions()
             if distribution.metadata.get("Name")}
+
+
+def _normalise_device_name(value: object) -> str:
+    """Return a stable form for a user-facing GPU name substring."""
+    return "".join(str(value).casefold().split())
+
+
+def _normalise_workspace(value: object) -> str:
+    """Canonicalize either a native absolute path or a Linux server path.
+
+    C002 is intentionally a Linux-only execution recipe, but accepting its
+    explicit POSIX path during a local static check gives a useful target
+    mismatch instead of misclassifying the configuration as malformed.
+    """
+    text = str(value).strip()
+    posix = PurePosixPath(text)
+    if posix.is_absolute():
+        return posix.as_posix()
+    path = Path(text)
+    _assert(path.is_absolute(), "Training configuration expected_workspace must be absolute")
+    return str(path.resolve())
+
+
+def _configured_target(config: dict, root: Path) -> dict:
+    """Resolve the server identity that this selected recipe is allowed to use.
+
+    Older recipes predate explicit workspace/GPU fields.  Their historical
+    target is retained only as a compatibility default; C002 records every
+    value in its selected configuration so a copied readiness report cannot
+    authorize a different checkout or GPU.
+    """
+    instance_id = config.get("expected_vast_instance_id")
+    _assert(type(instance_id) is int and instance_id > 0,
+            "Training configuration must contain a positive expected_vast_instance_id")
+
+    workspace_text = config.get("expected_workspace", str(root))
+    _assert(isinstance(workspace_text, str) and workspace_text.strip(),
+            "Training configuration must contain a nonempty expected_workspace")
+    workspace = _normalise_workspace(workspace_text)
+
+    expected_gpu = config.get("expected_gpu", "RTX 3090")
+    _assert(isinstance(expected_gpu, str) and _normalise_device_name(expected_gpu),
+            "Training configuration must contain a nonempty expected_gpu")
+
+    minimum_gpu_memory_gib = config.get("minimum_gpu_memory_gib", 20)
+    _assert(type(minimum_gpu_memory_gib) in (int, float)
+            and math.isfinite(minimum_gpu_memory_gib) and minimum_gpu_memory_gib > 0,
+            "Training configuration minimum_gpu_memory_gib must be positive and finite")
+    return {
+        "instance_id": instance_id,
+        "workspace": workspace,
+        "expected_gpu": expected_gpu,
+        "minimum_gpu_memory_gib": minimum_gpu_memory_gib,
+    }
+
+
+def _data_verification_mode(config: dict) -> str:
+    """Select a pinned data-evidence policy without weakening legacy checks."""
+    policy = config.get("data_verification", {"mode": "archive_crc"})
+    _assert(isinstance(policy, dict) and set(policy) == {"mode"},
+            "Training configuration data_verification must contain only mode")
+    mode = policy["mode"]
+    _assert(mode in {"archive_crc", "installed_manifest_sha256"},
+            "Training configuration data_verification mode is unsupported")
+    return mode
 
 
 def validate_archive_source(root: Path, data: dict) -> dict:
@@ -119,6 +185,7 @@ def check_readiness(root: Path, config_path: Path, *, evidence_paths: dict | Non
     reports, metadata, checks = _read_evidence(root, paths)
     config = None
     commit = None
+    target = None
 
     def run_check(name, function, *, evidence=None, requires_contract=False):
         try:
@@ -141,7 +208,7 @@ def check_readiness(root: Path, config_path: Path, *, evidence_paths: dict | Non
     run_check("git_checkout", git_check)
 
     def contract_check():
-        nonlocal contract, config
+        nonlocal contract, config, target
         from speaker_id.training.contracts import load_contract
         observed = load_contract(config_path, root)
         if contract is not None:
@@ -150,26 +217,49 @@ def check_readiness(root: Path, config_path: Path, *, evidence_paths: dict | Non
         config = contract["config"]
         _assert(bool(contract.get("code_hashes")), "Training contract lacks source-code fingerprints")
         _assert(config["device"] == "cuda", "Ready execution must target CUDA")
-        _assert(config.get("expected_vast_instance_id") == 50079023, "Training configuration must target Vast instance 50079023")
-        return {"signature": contract["signature"], "input_hashes": contract["input_hashes"]}
+        target = _configured_target(config, root)
+        data_verification_mode = _data_verification_mode(config)
+        return {"signature": contract["signature"], "input_hashes": contract["input_hashes"],
+                "target": {"instance_id": target["instance_id"],
+                           "workspace": str(target["workspace"]),
+                           "expected_gpu": target["expected_gpu"],
+                           "minimum_gpu_memory_gib": target["minimum_gpu_memory_gib"],
+                           "data_verification_mode": data_verification_mode}}
 
     run_check("training_contract", contract_check)
 
+    def configured_target_check():
+        _assert(target is not None, "Training configuration target did not validate")
+        _assert(_normalise_workspace(root) == target["workspace"],
+                "Current workspace differs from configuration expected_workspace")
+        return {"instance_id": target["instance_id"], "workspace": str(target["workspace"]),
+                "expected_gpu": target["expected_gpu"],
+                "minimum_gpu_memory_gib": target["minimum_gpu_memory_gib"]}
+
+    run_check("configured_target", configured_target_check, requires_contract=True)
+
     def instance_check():
         marker = reports["instance"]
+        _assert(target is not None, "Training configuration target did not validate")
         _assert(marker.get("status") == "verified", "Vast/SSH instance identity has not been verified")
-        _assert(int(marker.get("instance_id", -1)) == 50079023, "Unexpected Vast instance ID")
+        _assert(int(marker.get("instance_id", -1)) == target["instance_id"], "Unexpected Vast instance ID")
         _assert(marker.get("verified_via") == "vast_api_and_ssh", "Instance needs Vast API and SSH verification")
         _assert(platform.system() == "Linux", "Only the remote Linux instance can be marked ready")
         _assert(marker.get("hostname") == socket.gethostname(), "Instance marker is from another hostname")
-        _assert(Path(marker.get("remote_workspace", "")).resolve() == root, "Instance workspace differs")
-        _assert(os.environ.get("VAST_INSTANCE_ID") == "50079023", "VAST_INSTANCE_ID=50079023 must be set in the execution environment")
-        return {"instance_id": 50079023, "hostname": socket.gethostname()}
+        marker_workspace = _normalise_workspace(marker.get("remote_workspace", ""))
+        _assert(marker_workspace == target["workspace"], "Instance marker workspace differs from configuration")
+        _assert(marker_workspace == _normalise_workspace(root), "Instance workspace differs")
+        expected_instance_id = str(target["instance_id"])
+        _assert(os.environ.get("VAST_INSTANCE_ID") == expected_instance_id,
+                f"VAST_INSTANCE_ID={expected_instance_id} must be set in the execution environment")
+        return {"instance_id": target["instance_id"], "hostname": socket.gethostname(),
+                "workspace": str(target["workspace"])}
 
-    run_check("remote_instance", instance_check, evidence="instance")
+    run_check("remote_instance", instance_check, evidence="instance", requires_contract=True)
 
     def runtime_check():
         runtime = reports["runtime"]
+        _assert(target is not None, "Training configuration target did not validate")
         _assert(runtime.get("status") == "passed", "Runtime preflight has not passed")
         _assert(runtime.get("training_started") is False, "Runtime evidence must not describe a training run")
         _assert(sys.version_info[:2] == (3, 12), "Python 3.12 required")
@@ -180,8 +270,12 @@ def check_readiness(root: Path, config_path: Path, *, evidence_paths: dict | Non
         cuda = runtime["cuda"]
         _assert(cuda.get("available") is True and cuda.get("arithmetic_check_passed") is True,
                 "CUDA arithmetic probe has not passed")
-        _assert(any("3090" in device.get("name", "") and device.get("total_memory_bytes", 0) >= 20 * 1024**3
-                    for device in cuda.get("devices", [])), "RTX 3090 with at least 20 GiB was not verified")
+        expected_gpu = _normalise_device_name(target["expected_gpu"])
+        minimum_memory = target["minimum_gpu_memory_gib"] * 1024**3
+        _assert(any(expected_gpu in _normalise_device_name(device.get("name", ""))
+                    and device.get("total_memory_bytes", 0) >= minimum_memory
+                    for device in cuda.get("devices", [])),
+                f"{target['expected_gpu']} with at least {target['minimum_gpu_memory_gib']} GiB was not verified")
         _assert(runtime["checks"]["pip_check"]["returncode"] == 0, "pip dependency check failed")
         _assert(runtime["checks"]["audio_decode"]["status"] == "passed", "Real WAV/MP3 audio decoding was skipped/failed")
         _assert(runtime["checks"]["audio_decode"]["manifest_sha256"] == contract["input_hashes"]["manifest"],
@@ -203,17 +297,31 @@ def check_readiness(root: Path, config_path: Path, *, evidence_paths: dict | Non
     def data_check():
         data = reports["data"]
         _assert(data.get("status") == "passed", "Full transferred-data verification has not passed")
-        archive_identity = validate_archive_source(root, data)
+        mode = _data_verification_mode(config)
+        if mode == "archive_crc":
+            archive_identity = validate_archive_source(root, data)
+            _assert(data.get("archive_crc_verified_members") == config["expected_source_files"] + 1,
+                    "ZIP CRC was not checked for every audio file and labels.csv")
+            _assert(data.get("archive_deleted") is True, "Verified incoming server ZIP has not been deleted")
+        else:
+            _assert(data.get("verification_scope") == "all_installed_raw_files_manifest_sha256",
+                    "Installed-data report did not rehash every raw file against the manifest")
+            _assert(data.get("installed_file_sha256_verified") is True,
+                    "Installed-data report did not verify raw SHA256 values")
+            _assert(data.get("output_bytes_verified") is True,
+                    "Installed-data report did not verify raw file byte sizes")
+            _assert(data.get("output_files_verified") == config["expected_source_files"] + 1,
+                    "Installed-data inventory verification is incomplete")
+            archive_identity = {"data_verification_mode": mode,
+                                "installed_file_sha256_verified": True,
+                                "output_bytes_verified": True}
         _assert(data.get("training_started") is False, "Data evidence must not describe training")
         _assert(data.get("manifest_sha256") == contract["input_hashes"]["manifest"], "Data manifest changed after verification")
         _assert(data.get("audio_files_verified") == config["expected_source_files"], "Not all audio files were verified")
         _assert(data.get("class_count") == config["evaluation_classes"], "Verified class count differs")
-        _assert(data.get("archive_crc_verified_members") == config["expected_source_files"] + 1,
-                "ZIP CRC was not checked for every audio file and labels.csv")
         _assert(data.get("output_files_verified") == config["expected_source_files"] + 1,
                 "Extracted output verification is incomplete")
         _assert(data.get("labels_verified") is True, "labels.csv was not verified")
-        _assert(data.get("archive_deleted") is True, "Verified incoming server ZIP has not been deleted")
         _assert(Path(data["output"]).resolve() == root / "data/raw", "Data verification belongs to another output path")
         _assert(sha256_file(root / "data/raw/labels.csv") == data["labels_sha256"], "labels.csv changed after verification")
         expected_names = {row["audio_file"] for row in contract["manifest"]} | {"labels.csv"}
@@ -223,7 +331,7 @@ def check_readiness(root: Path, config_path: Path, *, evidence_paths: dict | Non
             audio = confined_path(root, root / "data/raw" / row["audio_file"])
             _assert(audio.is_file() and audio.stat().st_size == int(row["file_bytes"]),
                     f"Raw audio missing/size changed: {row['audio_file']}")
-        return {"audio_files": data["audio_files_verified"], "archive_deleted": True,
+        return {"audio_files": data["audio_files_verified"], "data_verification_mode": mode,
                 **archive_identity,
                 "launch_policy": "scripts/train.py rehashes every audio file before execution"}
 
@@ -231,11 +339,14 @@ def check_readiness(root: Path, config_path: Path, *, evidence_paths: dict | Non
 
     def model_check():
         model = contract["model"]
+        _assert(target is not None, "Training configuration target did not validate")
         weights = confined_path(root, model["weights_path"])
         _assert(sha256_file(weights) == model["weights_sha256"], "CAM++ checkpoint changed or is missing")
         probe = reports["campp"]
         _assert(probe.get("status") == "passed_forward_only", "Real CAM++ forward probe did not pass")
-        _assert(probe.get("device") == "cuda" and "3090" in str(probe.get("gpu", "")), "CAM++ probe was not on RTX3090 CUDA")
+        _assert(probe.get("device") == "cuda"
+                and _normalise_device_name(target["expected_gpu"]) in _normalise_device_name(probe.get("gpu", "")),
+                f"CAM++ probe was not on {target['expected_gpu']} CUDA")
         _assert(probe.get("training_started") is False and probe.get("optimizer_steps") == 0
                 and probe.get("backward_calls") == 0, "Infrastructure probe must not fit model weights")
         _assert(probe.get("model_weight_sha256") == model["weights_sha256"], "Probe used different model weights")
@@ -303,10 +414,21 @@ def check_readiness(root: Path, config_path: Path, *, evidence_paths: dict | Non
 
     run_check("mlflow_roundtrip", mlflow_check, evidence="mlflow", requires_contract=True)
     blocked = [check for check in checks if check["status"] != "passed"]
+    target_summary = (None if target is None else {
+        "instance_id": target["instance_id"], "workspace": str(target["workspace"]),
+        "expected_gpu": target["expected_gpu"], "minimum_gpu_memory_gib": target["minimum_gpu_memory_gib"],
+    })
+    execution_command = ("Target identity did not validate; do not execute training"
+                         if target is None else
+                         f"VAST_INSTANCE_ID={target['instance_id']} .venv/bin/python "
+                         "scripts/infra/with_project_env.py .venv/bin/python scripts/train.py "
+                         f"--config {config_path.relative_to(root).as_posix()} --execute-training")
     result = {
         "schema_version": 1, "status": "blocked" if blocked else "ready",
         "checked_at_utc": datetime.now(timezone.utc).isoformat(), "training_started": False,
-        "user_start_instruction_required": True, "instance_id": 50079023,
+        "user_start_instruction_required": True,
+        "instance_id": target["instance_id"] if target is not None else None,
+        "configured_target": target_summary,
         "workspace": str(root), "git_commit": commit,
         "config_path": str(config_path.relative_to(root).as_posix()), "config_sha256": sha256_file(config_path),
         "contract_signature": contract.get("signature") if contract else None,
@@ -314,7 +436,7 @@ def check_readiness(root: Path, config_path: Path, *, evidence_paths: dict | Non
         "input_hashes": contract.get("input_hashes") if contract else None,
         "model_weight_sha256": contract["model"]["weights_sha256"] if contract else None,
         "evidence": metadata, "checks": checks, "blocked_checks": len(blocked),
-        "next_command_after_user_start": f"VAST_INSTANCE_ID=50079023 .venv/bin/python scripts/infra/with_project_env.py .venv/bin/python scripts/train.py --config {config_path.relative_to(root).as_posix()} --execute-training",
+        "next_command_after_user_start": execution_command,
         "limits": ["This report performs no model training or calibration.",
                    "Execution rehashes all source audio and repeats a live MLflow artifact and metadata roundtrip.",
                    "Leaderboard package ranges are checked; exact offline submission compatibility requires the final bundle test."],

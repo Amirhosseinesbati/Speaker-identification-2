@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "experiment_code": "C002",
+  "run_name": "C002-campp-fresh-cuda-fixed-rms-boost",
+  "readiness_config": "configs/train/campp_coverage_c002.json",
+  "output_root": "artifacts/training/cuda_gain_c002",
+  "source_release_config": "configs/package/campp_selected.json",
+  "source_release_config_sha256": "1f0281a98f60ccfd7c309a67a2dec3936b1c787f3f8b26d43b53f743eb17ae2b",
+  "gain_policy": {
+    "schema_version": 1,
+    "name": "boost_rms_v1",
+    "target_rms_dbfs": -20.0,
+    "maximum_gain_db": 60.0,
+    "peak_ceiling": 0.95,
+    "position": "after_channel_selection_and_resampling_before_crop_or_pad",
+    "statistics_dtype": "float64",
+    "multiplication_dtype": "float32",
+    "gain_rounding": "float32_toward_zero",
+    "attenuate": false,
+    "clip": false,
+    "zero_signal": "unchanged"
+  },
+  "identity_policy": {"schema_version": 1, "name": "identity_v1"},
+  "alphas": [0.0, 0.25, 0.5, 0.75, 1.0],
+  "alpha_tie_order": [0.0, 1.0, 0.25, 0.5, 0.75],
+  "unknown_weights": [0.0, 0.25, 0.5, 0.75, 1.0],
+  "margin_weights": [0.0, 0.5],
+  "threshold_candidates": 201,
+  "probability_temperature": 0.05,
+  "selection_policy": "Choose frontend, alpha and gate using group-excluded inner queries only; ties prefer identity.",
+  "decision_rule": {"minimum_pooled_improvement": 0.003, "maximum_fold_decline": 0.005},
+  "primary_contrast": "C002d minus C002b; C002a historical control is never a selectable frontend",
+  "recipes": [
+    "C002a_historical_s008c_control",
+    "C002b_fresh_cuda_identity",
+    "C002c_fresh_cuda_gain",
+    "C002d_inner_frontend_choice"
+  ],
+  "target_identity": {
+    "vast_instance_id": 50288952,
+    "gpu_name_contains": "RTX 3090",
+    "minimum_gpu_memory_gib": 24,
+    "minimum_free_memory_mib": 10240
+  },
+  "execution": {
+    "device": "cuda",
+    "worker_count": 1,
+    "tensor_dtype": "float32",
+    "maximum_extraction_seconds": 28800,
+    "progress_every_pairs": 50,
+    "no_cpu_fallback": true,
+    "no_resume": true
+  },
+  "mlflow_payload": "configs_source_hashes_reports_and_scalar_metrics_no_embeddings"
+}

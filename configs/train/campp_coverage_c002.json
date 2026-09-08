@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "experiment_code": "B002-C002",
+  "run_name": "B002-C002-campp-frozen-fullutterance180",
+  "hypothesis": "C002 is a fresh CUDA infrastructure and data-integrity control on Vast instance 50288952. It preserves the B002 public frozen CAM++ full-utterance policy while binding readiness to the new server, workspace and independently rehashed installed dataset. It does not assert an OOF improvement or start model fitting.",
+  "mode": "frozen_baseline",
+  "model_config": "configs/model/campp.json",
+  "data_dir": "data/raw",
+  "manifest": "data/processed/eda_v1/audio_manifest.csv",
+  "folds": "data/processed/eda_v1/folds.csv",
+  "roles": "data/processed/eda_v1/calibration_roles.csv",
+  "label_map": "data/processed/eda_v1/label_map.json",
+  "output_root": "artifacts/training/C002",
+  "seed": 20260908,
+  "device": "cuda",
+  "cpu_threads": 4,
+  "fold_ids": [
+    0,
+    1
+  ],
+  "expected_source_files": 4529,
+  "known_classes": 446,
+  "evaluation_classes": 447,
+  "tracking_required": true,
+  "inference": {
+    "seconds": 180.0,
+    "maximum_windows": 1
+  },
+  "scoring": {
+    "method": "normalized_mean_prototype",
+    "calibration": "global_max_cosine",
+    "threshold_candidates": 201,
+    "probability_temperature": 0.05
+  },
+  "fit": {
+    "epochs": 5,
+    "steps_per_epoch": 100,
+    "batch_size": 32,
+    "crop_seconds": 3.0,
+    "encoder_lr": 1e-05,
+    "head_lr": 0.001,
+    "weight_decay": 0.0001,
+    "margin": 0.2,
+    "scale": 30.0,
+    "freeze_batchnorm": true,
+    "trainable_prefixes": [
+      "xvector.block3",
+      "xvector.transit3",
+      "xvector.out_nonlinear",
+      "xvector.dense"
+    ],
+    "gradient_clip_norm": 5.0,
+    "mixed_precision": true,
+    "checkpoint_every_steps": 100,
+    "epoch_selection": "fixed_steps_no_outer_selection",
+    "augmentation": "none_initial_control"
+  },
+  "expected_vast_instance_id": 50288952,
+  "expected_workspace": "/workspace/Speaker-identification-2-c002",
+  "expected_gpu": "RTX 3090",
+  "minimum_gpu_memory_gib": 20,
+  "data_verification": {
+    "mode": "installed_manifest_sha256"
+  }
+}

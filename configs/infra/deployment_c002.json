@@ -1,0 +1,28 @@
+{
+  "schema_version": 2,
+  "deployment_id": "C002",
+  "instance_id": 50288952,
+  "gpu": "RTX 3090",
+  "minimum_gpu_memory_gib": 20,
+  "repository": "https://github.com/Amirhosseinesbati/Speaker-identification-2.git",
+  "branch": "codex/c002-gpu-migration",
+  "remote_workspace": "/workspace/Speaker-identification-2-c002",
+  "evidence_root": "artifacts/infrastructure/C002_preparation",
+  "mlflow_state_source": "artifacts/infrastructure/mlflow_state.json",
+  "mlflow_state_path": "artifacts/infrastructure/C002_preparation/mlflow_state.json",
+  "data_verification": {
+    "mode": "installed_manifest_sha256"
+  },
+  "archive_path": "data/incoming/raw.zip",
+  "archive_size_bytes": 10084914268,
+  "archive_sha256": "9b01450dd59aa13909f8416e4b2450d512b88f5a9f45d398824937dd63e22ac6",
+  "mlflow_experiment_name": "iaaa2026-campp-infrastructure-20260907",
+  "metadata_files": [
+    "data/processed/eda_v1/audio_manifest.csv",
+    "data/processed/eda_v1/folds.csv",
+    "data/processed/eda_v1/calibration_roles.csv",
+    "data/processed/eda_v1/label_map.json"
+  ],
+  "training_config": "configs/train/campp_coverage_c002.json",
+  "training_started": false
+}
