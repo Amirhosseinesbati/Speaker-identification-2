@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "experiment_code": "CP001",
+  "run_name": "CP001-frozen-dual-encoder-cpu-feasibility",
+  "device": "cpu",
+  "instance_id": 50079023,
+  "hostname": "4593b1f57a8e",
+  "workspace": "/workspace/Speaker-identification-2",
+  "threads": 4,
+  "max_elapsed_seconds": 600,
+  "source_suite": "configs/train/campp_gain.json",
+  "inference": {"seconds": 180.0, "maximum_windows": 1},
+  "gain_policy": {
+    "schema_version": 1,
+    "name": "boost_rms_v1",
+    "target_rms_dbfs": -20.0,
+    "maximum_gain_db": 60.0,
+    "peak_ceiling": 0.95,
+    "position": "after_channel_selection_and_resampling_before_crop_or_pad",
+    "statistics_dtype": "float64",
+    "multiplication_dtype": "float32",
+    "gain_rounding": "float32_toward_zero",
+    "attenuate": false,
+    "clip": false,
+    "zero_signal": "unchanged"
+  },
+  "minimum_memory_headroom_gib": 8,
+  "minimum_disk_free_gib": 10,
+  "selection": "fixed first/middle/last, first zero, shortest/longest nonzero, lowest nonzero RMS; no labels",
+  "output_root": "artifacts/infrastructure/cpu_pilots",
+  "encoder_updates": 0
+}
