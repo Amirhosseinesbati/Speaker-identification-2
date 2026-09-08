@@ -154,6 +154,23 @@ def verify_selection(root, selection):
                 'verification_sha256': selection['verification']['sha256'], 'selection': selection}}
 
 
+def merge_remote_requests(requests):
+    """One readback directory per run, retaining every distinct artifact check."""
+    merged = {}
+    for run_id, parent, files in requests:
+        if run_id not in merged:
+            merged[run_id] = (parent, {})
+        expected_parent, inventory = merged[run_id]
+        require(parent == expected_parent, 'Duplicate run has conflicting parent identity')
+        for remote_path, local_path in files:
+            if remote_path in inventory:
+                require(file_sha256(inventory[remote_path]) == file_sha256(local_path),
+                        'Duplicate remote artifact has conflicting expected local bytes')
+            else:
+                inventory[remote_path] = local_path
+    return [(run_id, parent, list(inventory.items())) for run_id, (parent, inventory) in merged.items()]
+
+
 def load_sources(root, config, *, verify_audio=False):
     """Read historical caches only after identity checks; no forward or optimizer."""
     validate_config(config)
@@ -224,5 +241,5 @@ def load_sources(root, config, *, verify_audio=False):
     require(masks and all(np.array_equal(masks[0], mask) for mask in masks)
         and int((~masks[0]).sum()) == 89, 'Selected encoders disagree on original row order/zero semantics')
     return {'contract': contract, 'query_contract': contract_for_queries, 'vectors': vectors, 'valid': masks[0],
-        'assets': assets, 'proof': proof, 'exports': exports, 'remote_requests': requests, 'selection': selected,
+        'assets': assets, 'proof': proof, 'exports': exports, 'remote_requests': merge_remote_requests(requests), 'selection': selected,
         'captured_configs': captured_configs}

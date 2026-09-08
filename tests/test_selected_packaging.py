@@ -179,5 +179,30 @@ class SelectedReleaseTests(unittest.TestCase):
                         loader=load, writer=lambda value, handle: handle.write(b'changed'), tensor_predicate=lambda item: isinstance(item, FakeTensor))
 
 
+class RemoteRequestMergeTests(unittest.TestCase):
+    def test_repeated_source_run_keeps_all_distinct_checks_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            first, alias, extra = [Path(directory) / name for name in ('first', 'alias', 'extra')]
+            first.write_bytes(b'identical'); alias.write_bytes(b'identical'); extra.write_bytes(b'other')
+            result = selected_sources.merge_remote_requests([
+                ('parent', None, [('snapshot.zip', first)]),
+                ('child', 'parent', [('report.json', extra)]),
+                ('parent', None, [('snapshot.zip', alias), ('model.json', extra)])])
+            self.assertEqual(result, [('parent', None, [('snapshot.zip', first), ('model.json', extra)]),
+                                      ('child', 'parent', [('report.json', extra)])])
+
+    def test_conflicting_parent_cannot_be_deduplicated(self):
+        with self.assertRaisesRegex(ValueError, 'parent identity'):
+            selected_sources.merge_remote_requests([('run', None, []), ('run', 'other', [])])
+
+    def test_conflicting_artifact_bytes_cannot_be_deduplicated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            first, other = Path(directory) / 'first', Path(directory) / 'other'
+            first.write_bytes(b'original'); other.write_bytes(b'changed')
+            with self.assertRaisesRegex(ValueError, 'conflicting expected local bytes'):
+                selected_sources.merge_remote_requests([('run', None, [('report', first)]),
+                                                       ('run', None, [('report', other)])])
+
+
 if __name__ == '__main__':
     unittest.main()
