@@ -187,7 +187,7 @@ def main():
         remote(f"set -eu; cd {q(workspace)}; test \"$(git rev-parse HEAD)\" = {q(revision)}; "
                f"test \"$(git remote get-url origin)\" = {q(config['repository'])}; "
                f"test \"$(git branch --show-current)\" = {q(config['branch'])}; "
-               "test -z \"$(git status --porcelain --untracked-files=normal)\"")
+               "test -z \"$(git status --porcelain --untracked-files=no)\"")
         marker = json.loads((evidence_root / "instance.json").read_text())
         if marker.get("instance_id") != config["instance_id"] or marker.get("git_commit") != revision or marker.get("remote_workspace") != workspace:
             raise SystemExit("Run deploy for this exact instance, workspace and commit before provisioning.")

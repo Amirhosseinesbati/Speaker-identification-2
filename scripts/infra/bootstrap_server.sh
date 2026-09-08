@@ -5,7 +5,9 @@ cd "$(dirname "$0")/../.."
 test "$(uname -s)" = Linux
 expected_git_branch="${EXPECTED_GIT_BRANCH:-develop}"
 test "$(git branch --show-current)" = "$expected_git_branch"
-test -z "$(git status --porcelain --untracked-files=normal)"
+# Data, model assets and ignored experiment evidence are installed after clone.
+# Only a change to committed source may authorize an unexpected bootstrap.
+test -z "$(git status --porcelain --untracked-files=no)"
 python3 -c 'import sys; assert sys.version_info[:2] == (3,12), "Python 3.12 is required"'
 python3 -m venv .venv-bootstrap
 .venv-bootstrap/bin/python -m pip install 'uv==0.11.28'
