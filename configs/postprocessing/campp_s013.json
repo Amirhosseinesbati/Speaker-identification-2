@@ -1,0 +1,101 @@
+{
+  "schema_version": 1,
+  "experiment_code": "S013",
+  "run_name": "S013-campp-nested-frozen-metrics",
+  "output_root": "artifacts/training",
+  "source_package_config": "configs/package/campp_selected.json",
+  "source_package_config_sha256": "1f0281a98f60ccfd7c309a67a2dec3936b1c787f3f8b26d43b53f743eb17ae2b",
+  "source_verification": "artifacts/infrastructure/S008_verification/verification.json",
+  "source_verification_sha256": "5b4f08c1dc5084f892826b3161f2b7bc5132c1e01c9c9039f42c8fd5c0719857",
+  "s011_verification": "artifacts/infrastructure/S011_verification/S011_20260908T114324Z_4d842981/verification.json",
+  "s011_verification_sha256": "926689b0ce8b4f3cdc0618a2df8ba815e3acac27b7f85f66a001f05ea90abc5e",
+  "s012_prerequisite": {
+    "run_path": "artifacts/training/S012_20260908T132725Z_8ab465e1",
+    "parent_run_id": "cf5523b035154f2b82dd3416f1e2368f",
+    "git_commit": "379e44cf3c851831fabe3c6f7c7cb57ae3225629",
+    "verification_path": "artifacts/infrastructure/S012_verification/S012_20260908T132725Z_8ab465e1/verification.json",
+    "verification_sha256": "3b4ad7c9b08e5e225113a6c371e4efa1eaf6462eade2645620db280b67094503",
+    "report_sha256": "4dce5da26e14d5aeac3a9e81bd5dc8917f24f583a132ba74b74f85852e1c9334"
+  },
+  "device": "cuda",
+  "cpu_threads": 4,
+  "metric_fit_device": "cpu",
+  "matching_device": "cpu",
+  "metric_specs": [
+    {
+      "id": "identity",
+      "kind": "identity"
+    },
+    {
+      "id": "centering_only",
+      "kind": "centering"
+    },
+    {
+      "id": "wccn_l50_p25",
+      "kind": "partial_wccn",
+      "shrinkage": 0.5,
+      "power": 0.25
+    },
+    {
+      "id": "wccn_l50_p50",
+      "kind": "partial_wccn",
+      "shrinkage": 0.5,
+      "power": 0.5
+    },
+    {
+      "id": "wccn_l90_p25",
+      "kind": "partial_wccn",
+      "shrinkage": 0.9,
+      "power": 0.25
+    },
+    {
+      "id": "wccn_l90_p50",
+      "kind": "partial_wccn",
+      "shrinkage": 0.9,
+      "power": 0.5
+    }
+  ],
+  "advanced_weight": 0.5,
+  "unknown_weights": [
+    0.0,
+    0.25,
+    0.5,
+    0.75,
+    1.0
+  ],
+  "margin_weights": [
+    0.0,
+    0.5
+  ],
+  "threshold_quantiles": 201,
+  "probability_temperature": 0.05,
+  "meta_folds": 3,
+  "meta_assignment_salt": "S012-nested-gallery-v1",
+  "promotion": {
+    "minimum_pooled_gain": 0.001,
+    "maximum_meta_fold_loss": 0.002,
+    "reference": "identity_metric_control",
+    "otherwise": "exact_historical_baseline"
+  },
+  "baseline_numerical_policy": {
+    "threshold_atol": 1e-06,
+    "probability_atol": 1e-05,
+    "relative_tolerance": 0.0,
+    "rationale": "Fixed Linux-to-Windows float32 BLAS allowance: exact historical predictions, every 447-class metric, selected coefficients and all calibration-curve F1 values; only threshold absolute drift 1e-6 and probability absolute drift 1e-5 permitted. No relaxation."
+  },
+  "selection_policy": "The six geometries and alpha 0.5 are frozen before any S013 fitting or evaluation. Require completed independently verified S012 evidence and reproduce both original S008c folds before any mean/covariance fitting. Each of three meta folds removes complete validation groups from known-only metric fitting and the reference gallery. Select each gate from the fixed 5x2x201 grid using pooled nested scores. Compare learned geometries against the separately normalized identity geometry under identical meta assignments. The primary policy requires pooled meta gain >=0.001 and every meta-fold loss <=0.002; otherwise return the exact historical S008c probabilities. Save and upload the complete frozen selection before full-reference transform fitting and original outer scoring. Individual geometry OOF results are exploratory; outer labels never select or fit a policy. All metric operations use CPU; no CUDA scoring or deployment-parity claim.",
+  "research_notes": "reports/research/decision_postprocessing_20260908/frozen_metric_next_route.md",
+  "local_readiness": "artifacts/infrastructure/S012_preparation/sklearn_install_verification.json",
+  "limitations": [
+    "Repeated development OOF is not an untouched test or hidden leaderboard estimate.",
+    "Six fixed geometric recipes and their gates are selected from optimized nested meta scores; the selection score is not an independent test.",
+    "The normalized identity geometry is a separate metric control, not the exact historical S008c baseline.",
+    "Every meta-validation group is excluded from the fitted mean, covariance and entire reference gallery. Unknown recordings never enter the fitted mean or covariance.",
+    "The mean weights known speakers equally; within-speaker covariance weights qualifying speakers equally and independent content groups equally.",
+    "Nested gallery removal lowers speaker support; singleton groups remain reference-only, and support-domain mismatch remains a limitation.",
+    "Each geometric recipe is exploratory. Only the prespecified overall selector or exact historical baseline fallback is the primary comparison.",
+    "The fixed fusion weight is 0.5. Unlike decision-only heads, geometric transforms can change the known-identity ranking.",
+    "Mean/covariance fitting, normalization and cosine matching execute on the local CPU. No CUDA scoring result or CPU/CUDA parity claim is made.",
+    "No encoder updates, new audio extraction, test transduction, package replacement or leaderboard submission occurs in this suite."
+  ]
+}

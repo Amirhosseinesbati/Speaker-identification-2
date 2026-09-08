@@ -1,4 +1,4 @@
-"""Populate an existing clean S012 checkout with local immutable input hardlinks.
+"""Populate a clean local postprocessing checkout with immutable input hardlinks.
 
 This does not clone Git, open MLflow, read raw audio or fit any model. The caller
 first creates a detached local checkout of the published source revision. Source
@@ -56,20 +56,38 @@ def git(root, *arguments):
         text=True, encoding='utf-8', timeout=30).strip()
 
 
-def populate(destination, commit):
+def populate(destination, commit, suite='S012'):
     destination = Path(destination).resolve()
     if not (re.fullmatch('[a-f0-9]{40}', commit) and destination.is_relative_to(ROOT / 'tmp')
             and destination != ROOT / 'tmp' and (destination / '.git').exists()
             and git(destination, 'rev-parse', 'HEAD') == commit
             and not git(destination, 'status', '--porcelain', '--', 'src', 'scripts', 'configs', 'pyproject.toml', 'uv.lock')):
         raise ValueError('Require a clean isolated checkout at the exact published commit under project tmp/')
+    if suite not in ('S012', 'S013'):
+        raise ValueError('Unregistered local postprocessing suite')
+    directories, input_files = list(DIRECTORIES), list(FILES)
+    if suite == 'S013':
+        config = json.loads((ROOT / 'configs/postprocessing/campp_s013.json').read_text(encoding='utf-8'))
+        prior = config['s012_prerequisite']
+        if not (isinstance(prior.get('run_path'), str)
+                and re.fullmatch(r'artifacts/training/S012_\d{8}T\d{6}Z_[a-f0-9]{8}', prior['run_path'])
+                and prior.get('verification_path') == 'artifacts/infrastructure/S012_verification/'
+                    + prior['run_path'].split('/')[-1] + '/verification.json'):
+            raise ValueError('S013 requires the pinned completed S012 input paths')
+        if (digest(ROOT / prior['verification_path']) != prior['verification_sha256']
+                or digest(ROOT / prior['run_path'] / 'experiment_report.json') != prior['report_sha256']):
+            raise ValueError('S012 completion proof differs from the S013 pins')
+        directories.append(prior['run_path'])
+        input_files += [prior['verification_path'],
+            'artifacts/infrastructure/S012_preparation/research/metric_next_route_manifest.json',
+            'artifacts/infrastructure/S013_preparation/metric_validation.json']
     sources = []
-    for relative in DIRECTORIES:
+    for relative in directories:
         folder = ROOT / relative
         if not folder.is_dir():
             raise ValueError('Required historical directory is absent: ' + relative)
         sources.extend(p for p in folder.rglob('*') if p.is_file() and '__pycache__' not in p.parts)
-    sources.extend(ROOT / relative for relative in FILES)
+    sources.extend(ROOT / relative for relative in input_files)
     receipt = []
     for source in sorted(set(sources)):
         relative = source.relative_to(ROOT)
@@ -100,7 +118,7 @@ def populate(destination, commit):
               'source_root': str(ROOT), 'execution_root': str(destination), 'files': receipt,
               'new_output_directory_shared': False, 'raw_audio_copied': False,
               'tokens_copied': False, 'remote_server_accessed': False}
-    output = destination / 'artifacts/infrastructure/S012_preparation/isolated_workspace.json'
+    output = destination / f'artifacts/infrastructure/{suite}_preparation/isolated_workspace.json'
     output.write_text(json.dumps(result, indent=2, sort_keys=True) + '\n', encoding='utf-8')
     print(json.dumps({'status': result['status'], 'files': len(receipt), 'receipt': str(output)}, indent=2))
 
@@ -109,5 +127,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--destination', required=True, type=Path)
     parser.add_argument('--commit', required=True)
+    parser.add_argument('--suite', choices=['S012', 'S013'], default='S012')
     args = parser.parse_args()
-    populate(args.destination, args.commit)
+    populate(args.destination, args.commit, args.suite)
