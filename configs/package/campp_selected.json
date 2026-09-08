@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "experiment_code": "P002",
+  "readiness_config": "configs/train/campp_coverage.json",
+  "output_root": "artifacts/releases",
+  "expected_vast_instance_id": 50079023,
+  "tracking_required": true,
+  "encoder_fold": 0,
+  "alphas": [
+    0.0,
+    0.25,
+    0.5,
+    0.75,
+    1.0
+  ],
+  "alpha_tie_order": [
+    0.0,
+    1.0,
+    0.25,
+    0.5,
+    0.75
+  ],
+  "unknown_weights": [
+    0.0,
+    0.25,
+    0.5,
+    0.75,
+    1.0
+  ],
+  "margin_weights": [
+    0.0,
+    0.5
+  ],
+  "threshold_candidates": 201,
+  "probability_temperature": 0.05,
+  "inference": {
+    "seconds": 180.0,
+    "maximum_windows": 1
+  },
+  "roles_sha256": "882b7535da2f72060c1bf7aaf4549eb3052f621ad0efd88f23f6a6aad28e3fa9",
+  "expected_counts": {
+    "source": 4529,
+    "known_references": 2217,
+    "unknown_references": 2223,
+    "zeros": 89,
+    "q0_queries": 999,
+    "frozen_queries": 4440
+  },
+  "new_encoder_updates": 0,
+  "selection": {
+    "recipe_id": "S008c",
+    "family": "public_advanced",
+    "source": {
+      "run": "artifacts/training/S008_20260907T233351Z_b35f3c28",
+      "parent_run_id": "63f25c9baebf4ec0a0907254ac8fce01",
+      "git_commit": "17f92bd83123834cc7af04f57d411b803f3ce5c6",
+      "children": {
+        "S008a": "01970ea72fd54d0c9595b78deb08b14b",
+        "S008b": "52317ac3daab45ed9e80f2a0233c205a",
+        "S008c": "7f8e37733bee40798a36d49e62960bde"
+      },
+      "export_manifest_paths": [
+        "artifacts/exports/S008_20260907T233351Z_b35f3c28.complete.manifest.json",
+        "artifacts/infrastructure/S008_verification/server_export_manifest.json"
+      ],
+      "export_manifest_sha256": "17dde36bbb88932eb042b80dd6fa1ca91768198395e0ef274c75feebab791f93"
+    },
+    "report_sha256": "b8058fba1a8967daf4f332fd60455f60c683441c46aefc118db31a66bf024036",
+    "verification": {
+      "path": "artifacts/infrastructure/S008_verification/verification.json",
+      "sha256": "5b4f08c1dc5084f892826b3161f2b7bc5132c1e01c9c9039f42c8fd5c0719857"
+    }
+  }
+}
