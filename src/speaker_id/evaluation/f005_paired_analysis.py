@@ -492,6 +492,10 @@ def analyze_f005_vs_c002b(f005_dir: Path, c002b_dir: Path, manifest_path: Path,
                 prediction = f005["predictions"][comparator][audio_file]
                 row[f"{comparator}_prediction"] = prediction
                 row[f"{comparator}_known_top1"] = f005["known_top1"][comparator][audio_file]
+            # Keep the published table self-explanatory while the internal
+            # comparison key remains ``selected_arm`` for all F005 variants.
+            row["f005_selected_prediction"] = row["selected_arm_prediction"]
+            row["f005_selected_known_top1"] = row["selected_arm_known_top1"]
             if selected_ranks is None:
                 row["f005_selected_known_rank"] = None
             else:
@@ -507,6 +511,8 @@ def analyze_f005_vs_c002b(f005_dir: Path, c002b_dir: Path, manifest_path: Path,
                 row[f"{prefix}_correct"] = row[f"{prefix}_prediction"] == actual
                 row[f"{prefix}_error_mode"] = _error_mode(actual, row[f"{prefix}_prediction"])
                 metrics_inputs[prefix].append({"audio_file": audio_file, "speaker_id": row[f"{prefix}_prediction"]})
+            row["f005_selected_correct"] = row["selected_arm_correct"]
+            row["f005_error_mode"] = row["selected_arm_error_mode"]
             all_rows.append(row)
         selected_matches_fresh.append(f005["selected_matches_fresh"])
     if {row["audio_file"] for row in all_rows} != set(manifest) or len(all_rows) != len(manifest):
