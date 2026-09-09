@@ -1,0 +1,170 @@
+{
+  "schema_version": 1,
+  "experiment_code": "S012",
+  "run_name": "S012-campp-nested-decision-heads",
+  "output_root": "artifacts/training",
+  "source_package_config": "configs/package/campp_selected.json",
+  "source_package_config_sha256": "1f0281a98f60ccfd7c309a67a2dec3936b1c787f3f8b26d43b53f743eb17ae2b",
+  "source_verification": "artifacts/infrastructure/S008_verification/verification.json",
+  "source_verification_sha256": "5b4f08c1dc5084f892826b3161f2b7bc5132c1e01c9c9039f42c8fd5c0719857",
+  "s011_verification": "artifacts/infrastructure/S011_verification/S011_20260908T114324Z_4d842981/verification.json",
+  "s011_verification_sha256": "926689b0ce8b4f3cdc0618a2df8ba815e3acac27b7f85f66a001f05ea90abc5e",
+  "device": "cuda",
+  "cpu_threads": 4,
+  "probability_temperature": 0.05,
+  "model_specs": [
+    {
+      "id": "dt_depth2",
+      "family": "decision_tree",
+      "params": {
+        "max_depth": 2,
+        "min_samples_leaf": 40
+      }
+    },
+    {
+      "id": "dt_depth3",
+      "family": "decision_tree",
+      "params": {
+        "max_depth": 3,
+        "min_samples_leaf": 80
+      }
+    },
+    {
+      "id": "rf128_depth5",
+      "family": "random_forest",
+      "params": {
+        "n_estimators": 128,
+        "max_depth": 5,
+        "min_samples_leaf": 30,
+        "max_features": 0.8,
+        "n_jobs": 4
+      }
+    },
+    {
+      "id": "extra256_depth5",
+      "family": "extra_trees",
+      "params": {
+        "n_estimators": 256,
+        "max_depth": 5,
+        "min_samples_leaf": 30,
+        "max_features": 1.0,
+        "n_jobs": 4
+      }
+    },
+    {
+      "id": "gb64_stump",
+      "family": "gradient_boosting",
+      "params": {
+        "n_estimators": 64,
+        "max_depth": 1,
+        "min_samples_leaf": 40,
+        "learning_rate": 0.05
+      }
+    },
+    {
+      "id": "gb128_depth2",
+      "family": "gradient_boosting",
+      "params": {
+        "n_estimators": 128,
+        "max_depth": 2,
+        "min_samples_leaf": 60,
+        "learning_rate": 0.03
+      }
+    }
+  ],
+  "feature_names": [
+    "baseline_margin",
+    "fused_known_top",
+    "fused_known_runner_up",
+    "fused_known_gap",
+    "fused_known_third_gap",
+    "fused_known_top10_mean",
+    "fused_known_all_mean",
+    "fused_known_all_std",
+    "fused_unknown_top",
+    "fused_unknown_top3_mean",
+    "fused_unknown_top10_mean",
+    "fused_unknown_top50_mean",
+    "fused_unknown_top50_std",
+    "public_score_at_fused_winner",
+    "advanced_score_at_fused_winner",
+    "public_known_top",
+    "advanced_known_top",
+    "public_gap",
+    "advanced_gap",
+    "public_unknown_top",
+    "advanced_unknown_top",
+    "public_known_minus_unknown",
+    "advanced_known_minus_unknown",
+    "encoder_winner_agreement",
+    "public_matches_fused",
+    "advanced_matches_fused",
+    "log1p_duration_capped180",
+    "rms_dbfs_clipped"
+  ],
+  "feature_sets": [
+    "scores_only",
+    "scores_quality"
+  ],
+  "modes": [
+    {
+      "mode": "veto",
+      "band": 0.025
+    },
+    {
+      "mode": "veto",
+      "band": 0.05
+    },
+    {
+      "mode": "rescue",
+      "band": 0.025
+    },
+    {
+      "mode": "rescue",
+      "band": 0.05
+    },
+    {
+      "mode": "two_way",
+      "band": 0.025
+    },
+    {
+      "mode": "two_way",
+      "band": 0.05
+    },
+    {
+      "mode": "full",
+      "band": null
+    }
+  ],
+  "meta_folds": 3,
+  "meta_assignment_salt": "S012-nested-gallery-v1",
+  "seed": 20260908,
+  "sklearn_version": "1.8.0",
+  "loss_weighting": "binary_balanced",
+  "threshold_quantiles": 201,
+  "promotion": {
+    "minimum_pooled_gain": 0.001,
+    "maximum_meta_fold_loss": 0.002,
+    "otherwise": "baseline"
+  },
+  "selection_policy": "Freeze all 84 model/feature/cascade candidates before execution. Both original S008c baseline folds must reproduce predictions and all 447-class metrics before any decision learner fitting. Every outer-training meta-validation group is removed from both learner fitting and the entire reference gallery; baseline alpha/gate are refitted using only the remaining meta-training pool. Three nested validation folds select candidate thresholds and policies; primary overall promotion requires pooled meta gain >=0.001 and every meta-fold loss <=0.002, otherwise retain the historical baseline. Four family results are exploratory. Never fit, tune, or choose an overall policy using original outer labels. CPU/CUDA selected-policy decision disagreement blocks package promotion without altering reported OOF.",
+  "baseline_numerical_policy": {
+    "threshold_atol": 1e-06,
+    "probability_atol": 1e-05,
+    "relative_tolerance": 0.0,
+    "rationale": "Linux-to-Windows float32 BLAS may differ. All historical predictions, per-class/pooled metrics, selected coefficients and every calibration-curve F1 remain exact; only threshold absolute drift 1e-6 and probability absolute drift 1e-5 are permitted. No automatic relaxation."
+  },
+  "local_readiness": "artifacts/infrastructure/S012_preparation/sklearn_install_verification.json",
+  "research_notes": "reports/research/decision_postprocessing_20260908/research_notes.md",
+  "limitations": [
+    "Repeated development OOF is not an untouched test or hidden leaderboard estimate.",
+    "The 84 candidates and threshold grid are selected on nested meta validation; this selection score is itself optimized and not an independent test.",
+    "Each meta-validation group is absent from learner-fit queries, reference gallery, cohort statistics and baseline calibration fitting.",
+    "Reduced meta galleries lower known-speaker support and leave some singleton classes reference-only; honest nesting does not remove this support-domain shift.",
+    "Four family OOF comparisons are exploratory; the prespecified overall selector with baseline fallback is the primary comparison.",
+    "Historical full-pool baseline calibration F1, nested selection F1, and outer OOF F1 have different scopes and must never be substituted for one another.",
+    "Known identity ranking is fixed; learned heads only accept or reject the existing best known identity.",
+    "The quality feature variant requires exactly matching original-rate channel-mean EDA duration/RMS in a future offline package.",
+    "No audio loading, encoder updates, test transduction or package replacement occurs in S012."
+  ]
+}
