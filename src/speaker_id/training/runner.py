@@ -163,7 +163,12 @@ def execute(contract: dict, root: Path, binding_path: Path, *, resume_dir: Path 
     from speaker_id.tracking import DurableMLflowRun, ExperimentBinding
     from speaker_id.infrastructure.readiness import validate_readiness_for_execution
     config = contract["config"]
-    validate_readiness_for_execution(root, contract)
+    # A recipe may bind execution to a versioned, experiment-specific readiness
+    # report.  Historical recipes keep the repository default path; new
+    # screens must never accidentally validate against stale evidence from a
+    # different config or server checkout.
+    readiness_path = root / config.get("readiness_report", "artifacts/infrastructure/readiness.json")
+    validate_readiness_for_execution(root, contract, readiness_path)
     if os.environ.get("VAST_INSTANCE_ID") != str(config["expected_vast_instance_id"]):
         raise RuntimeError("Execution requires the expected Vast instance marker; local training is prohibited")
     if not torch.cuda.is_available():
