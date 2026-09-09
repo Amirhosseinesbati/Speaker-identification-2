@@ -292,7 +292,10 @@ def _array_from_descriptor(structure: object, arrays: dict[str, np.ndarray]) -> 
 
 def _load_selected_ranks(f005_dir: Path, outer: int, selected_arm: str,
                          expected_files: list[str], labels: list[str]) -> dict[str, tuple[np.ndarray | None, str | None]] | None:
-    base = f005_dir / "full_scoring" / f"fold_{outer}" / selected_arm
+    # One pretruth bundle stores every comparator for an outer fold.  Arm
+    # checkpoints/caches sit below arm directories, but this sealed scoring
+    # receipt deliberately sits at the fold root.
+    base = f005_dir / "full_scoring" / f"fold_{outer}"
     metadata_path, arrays_path = base / "pretruth_bundle.json", base / "pretruth_bundle.npz"
     if not metadata_path.is_file() and not arrays_path.is_file():
         return None
@@ -302,7 +305,8 @@ def _load_selected_ranks(f005_dir: Path, outer: int, selected_arm: str,
     if metadata.get("schema_version") != 1 or metadata.get("arrays_file_sha256") != _sha256(arrays_path):
         raise ValueError("F005 selected pretruth bundle hash differs")
     structure = metadata.get("structure")
-    if not isinstance(structure, dict) or structure.get("outer_fold") != outer:
+    if (not isinstance(structure, dict) or structure.get("outer_fold") != outer
+            or structure.get("selected_arm") != selected_arm):
         raise ValueError("F005 selected pretruth bundle belongs to another fold")
     if structure.get("outer_files") != expected_files:
         raise ValueError("F005 selected pretruth bundle order differs from saved evaluation")
