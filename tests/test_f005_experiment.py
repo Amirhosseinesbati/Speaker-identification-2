@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import contextlib
+import hashlib
 import io
 import json
 from pathlib import Path
@@ -14,6 +15,7 @@ from unittest import mock
 import numpy as np
 
 from speaker_id.training.f005_experiment import (
+    _extract_advanced_cache,
     _safe_add_artifact,
     execute_f005_experiment,
 )
@@ -328,6 +330,52 @@ class F005ExperimentTests(unittest.TestCase):
                                    ("fit_tail", 0, "control", True)])
         self.assertTrue(any(item[0] == "reopen" for item in backend.events))
 
+    def test_resume_rejects_changed_completed_training_artifacts_before_consumption(self):
+        cases = {
+            "head checkpoint": Path("training/fold_0/shared_head/shared_head.pt"),
+            "tail checkpoint": Path("training/fold_0/tails/control/last.pt"),
+            "head report": Path("training/fold_0/shared_head/unit_report.json"),
+            "tail report": Path("training/fold_0/tails/control/unit_report.json"),
+        }
+        for name, relative in cases.items():
+            with self.subTest(artifact=name):
+                root, config, binding, contract = fake_project(self.temp_path / name.replace(" ", "-"))
+                backend = FakeBackend()
+                output = root / "runs" / "interrupted"
+                original_extract = backend.extract_arm
+                extraction_attempts = 0
+
+                def interrupt_before_scoring(*args, **kwargs):
+                    nonlocal extraction_attempts
+                    extraction_attempts += 1
+                    if extraction_attempts == 1:
+                        raise RuntimeError("simulated interruption before scoring")
+                    return original_extract(*args, **kwargs)
+
+                backend.extract_arm = interrupt_before_scoring
+                with self.assertRaisesRegex(RuntimeError, "before scoring"):
+                    execute_f005_experiment(
+                        contract, root, config, binding,
+                        backend=backend, output_dir=output,
+                    )
+
+                target = output / relative
+                target.write_bytes(target.read_bytes() + b"finite-but-different")
+                fit_events = sum(
+                    event[0] in {"fit_head", "fit_tail"} for event in backend.events
+                )
+                with self.assertRaisesRegex(
+                        ValueError, "training checkpoint or report identity changed"):
+                    execute_f005_experiment(
+                        contract, root, config, binding,
+                        backend=backend, resume_dir=output,
+                    )
+                self.assertEqual(extraction_attempts, 1)
+                self.assertEqual(
+                    sum(event[0] in {"fit_head", "fit_tail"} for event in backend.events),
+                    fit_events,
+                )
+
     def test_resume_recovers_parent_finished_before_final_state_write(self):
         root, config, binding, contract = fake_project(self.temp_path)
         backend = FakeBackend()
@@ -358,6 +406,59 @@ class F005ExperimentTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "metadata-only"):
                 _safe_add_artifact(tracker, path)
 
+    def test_valid_orphan_embedding_partial_resumes_without_audio_extraction(self):
+        from speaker_id.candidates import campp_advanced
+
+        root = self.temp_path / "embedding-project"
+        data = root / "data"
+        data.mkdir(parents=True)
+        audio = data / "sample.mp3"
+        audio.write_bytes(b"pinned-audio")
+        checkpoint = root / "last.pt"
+        checkpoint.write_bytes(b"pinned-checkpoint")
+        vector = np.zeros(192, dtype=np.float32)
+        vector[0] = 1.0
+        contract = {
+            "signature": "1" * 64,
+            "manifest": [{
+                "audio_file": audio.name,
+                "input_sha256": hashlib.sha256(audio.read_bytes()).hexdigest(),
+                "has_nonzero_signal": True,
+            }],
+            "config": {"scoring": {"advanced_inference": {"maximum_windows": 1}}},
+            "readiness": {"config": {"data_dir": "data"}},
+        }
+        cache = root / "cache" / "embedding_cache"
+        metadata = {"metadata_sha256": "2" * 64}
+        expected_valid = np.asarray([True], dtype=np.bool_)
+        with mock.patch.object(
+            campp_advanced, "extract_advanced_embedding",
+            return_value=(vector.copy(), {"nonzero_signal": True}),
+        ) as extract:
+            first = _extract_advanced_cache(
+                object(), contract, root, 0, "control", checkpoint, metadata,
+                np.asarray([0], dtype=np.int64), "known_selection",
+                expected_valid, cache, lambda *_args: None,
+            )
+        self.assertEqual(extract.call_count, 1)
+        target = cache / "sample.npz"
+        partial = target.with_suffix(".npz.partial")
+        target.replace(partial)
+
+        with mock.patch.object(
+            campp_advanced, "extract_advanced_embedding",
+            side_effect=AssertionError("recovery must not decode or infer audio"),
+        ) as extract:
+            resumed = _extract_advanced_cache(
+                object(), contract, root, 0, "control", checkpoint, metadata,
+                np.asarray([0], dtype=np.int64), "known_selection",
+                expected_valid, cache, lambda *_args: None,
+            )
+        self.assertEqual(extract.call_count, 0)
+        self.assertTrue(target.is_file())
+        self.assertFalse(partial.exists())
+        np.testing.assert_array_equal(resumed["embeddings"], first["embeddings"])
+
     def test_cli_defaults_to_no_execution(self):
         path = Path(__file__).resolve().parents[1] / "scripts/run_f005_experiment.py"
         spec = importlib.util.spec_from_file_location("f005_cli_for_test", path)
@@ -367,6 +468,77 @@ class F005ExperimentTests(unittest.TestCase):
         args = module.parse_args([])
         self.assertIs(args.execute, False)
         self.assertIsNone(args.resume_dir)
+        self.assertIsNone(args.managed_run_dir)
+
+    def test_cli_managed_run_directory_is_mutually_exclusive_with_manual_resume(self):
+        path = Path(__file__).resolve().parents[1] / "scripts/run_f005_experiment.py"
+        spec = importlib.util.spec_from_file_location("f005_cli_managed_args", path)
+        module = importlib.util.module_from_spec(spec)
+        self.assertIsNotNone(spec.loader)
+        spec.loader.exec_module(module)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            module.parse_args([
+                "--resume-dir", "artifacts/training/f005_consistency/old",
+                "--managed-run-dir", "artifacts/training/f005_consistency/stable",
+            ])
+
+    def test_cli_managed_run_directory_creates_then_resumes_same_logical_run(self):
+        path = Path(__file__).resolve().parents[1] / "scripts/run_f005_experiment.py"
+        spec = importlib.util.spec_from_file_location("f005_cli_managed_run", path)
+        module = importlib.util.module_from_spec(spec)
+        self.assertIsNotNone(spec.loader)
+        spec.loader.exec_module(module)
+        original_root = module.ROOT
+        module.ROOT = self.temp_path.resolve()
+        try:
+            config = module.ROOT / "configs/train/config.json"
+            binding = module.ROOT / "artifacts/infrastructure/binding.json"
+            managed = module.ROOT / "artifacts/training/f005_consistency/stable"
+            config.parent.mkdir(parents=True)
+            binding.parent.mkdir(parents=True)
+            config.write_text("{}", encoding="utf-8")
+            binding.write_text("{}", encoding="utf-8")
+            managed.mkdir(parents=True)
+            contract = {
+                "signature": "a" * 64,
+                "config": {"output_root": "artifacts/training/f005_consistency"},
+            }
+            calls = []
+
+            def execute(*_args, **kwargs):
+                calls.append(kwargs)
+                output = kwargs.get("output_dir") or kwargs.get("resume_dir")
+                Path(output).mkdir(parents=True, exist_ok=True)
+                (Path(output) / "experiment_state.json").write_text("{}", encoding="utf-8")
+                return {
+                    "status": "complete",
+                    "resumed": kwargs.get("resume_dir") is not None,
+                    "output": str(output),
+                    "parent_run_id": "parent",
+                    "report": {"result": {}},
+                }
+
+            fake_contract = types.SimpleNamespace(
+                load_f005_contract=lambda *_args, **_kwargs: contract,
+            )
+            fake_experiment = types.SimpleNamespace(execute_f005_experiment=execute)
+            modules = {
+                "speaker_id.training.f005_contract": fake_contract,
+                "speaker_id.training.f005_experiment": fake_experiment,
+            }
+            argv = [
+                "--config", str(config), "--binding", str(binding),
+                "--managed-run-dir", str(managed), "--execute",
+            ]
+            with mock.patch.dict(sys.modules, modules), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(module.main(argv), 0)
+                self.assertEqual(module.main(argv), 0)
+            self.assertEqual(calls[0]["output_dir"], managed.resolve())
+            self.assertIsNone(calls[0]["resume_dir"])
+            self.assertEqual(calls[1]["resume_dir"], managed.resolve())
+            self.assertIsNone(calls[1]["output_dir"])
+        finally:
+            module.ROOT = original_root
 
     def test_cli_validation_does_not_resolve_or_require_mlflow_binding(self):
         path = Path(__file__).resolve().parents[1] / "scripts/run_f005_experiment.py"

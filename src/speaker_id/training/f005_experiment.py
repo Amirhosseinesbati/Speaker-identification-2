@@ -161,6 +161,31 @@ def _unit_key(outer: int, arm_id: str | None = None) -> str:
     return f"fold_{outer}" if arm_id is None else f"fold_{outer}/{arm_id}"
 
 
+def _verified_training_unit(record: dict, checkpoint: Path, report: Path, *,
+                            shared_checkpoint_sha256: str | None = None) -> Path:
+    """Authenticate one completed training unit before it is skipped or consumed."""
+    checkpoint, report = Path(checkpoint), Path(report)
+    _require(
+        isinstance(record, dict)
+        and record.get("complete") is True
+        and isinstance(record.get("checkpoint"), str)
+        and Path(record["checkpoint"]).resolve() == checkpoint.resolve()
+        and checkpoint.is_file() and not checkpoint.is_symlink()
+        and record.get("checkpoint_sha256") == _sha_file(checkpoint)
+        and isinstance(record.get("report"), str)
+        and Path(record["report"]).resolve() == report.resolve()
+        and report.is_file() and not report.is_symlink()
+        and record.get("report_sha256") == _sha_file(report),
+        "F005 recorded training checkpoint or report identity changed",
+    )
+    if shared_checkpoint_sha256 is not None:
+        _require(
+            record.get("shared_checkpoint_sha256") == shared_checkpoint_sha256,
+            "F005 tail refers to a different shared-head checkpoint",
+        )
+    return checkpoint
+
+
 def _read_rows(path: Path) -> list[dict]:
     with Path(path).open("r", encoding="utf-8", newline="") as stream:
         return list(csv.DictReader(stream))
@@ -201,12 +226,55 @@ def _unpack_arrays(value: object, arrays: dict[str, np.ndarray]) -> object:
     return value
 
 
+def _array_values_equal(left: np.ndarray, right: np.ndarray) -> bool:
+    left, right = np.asarray(left), np.asarray(right)
+    if left.dtype != right.dtype or left.shape != right.shape:
+        return False
+    if left.dtype.kind in "fc":
+        return bool(np.array_equal(left, right, equal_nan=True))
+    return bool(np.array_equal(left, right))
+
+
+def _load_npz_arrays(path: Path) -> dict[str, np.ndarray]:
+    path = Path(path)
+    _require(path.is_file() and not path.is_symlink(), "F005 cache must be a regular file")
+    with np.load(path, allow_pickle=False) as saved:
+        return {key: saved[key].copy() for key in saved.files}
+
+
+def _require_exact_arrays(actual: dict[str, np.ndarray],
+                          expected: dict[str, np.ndarray], message: str) -> None:
+    _require(
+        set(actual) == set(expected)
+        and all(_array_values_equal(actual[key], expected[key]) for key in expected),
+        message,
+    )
+
+
+def _write_npz_atomic(path: Path, arrays: dict[str, np.ndarray]) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".partial")
+    _require(not path.exists() and not path.is_symlink(), "F005 refuses to replace a cache file")
+    _require(not temporary.exists() and not temporary.is_symlink(),
+             "F005 cache partial must be recovered before writing")
+    try:
+        with temporary.open("xb") as stream:
+            np.savez_compressed(stream, **arrays)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(path)
+    finally:
+        if temporary.exists() and not temporary.is_symlink():
+            temporary.unlink()
+
+
 def _save_pretruth(path: Path, pretruth: dict) -> dict:
-    """Persist score arrays locally so a sealed policy can resume without resealing."""
+    """Persist or authenticate a crash-orphaned server-only pretruth cache."""
     path = Path(path)
     arrays: dict[str, np.ndarray] = {}
     structure = _pack_arrays(pretruth, arrays)
-    metadata = {
+    metadata_base = {
         "schema_version": PRETRUTH_SCHEMA,
         "structure": structure,
         "array_keys": sorted(arrays),
@@ -214,19 +282,52 @@ def _save_pretruth(path: Path, pretruth: dict) -> dict:
     }
     array_path = path.with_suffix(".npz")
     metadata_path = path.with_suffix(".json")
-    for target in (array_path, metadata_path):
-        if target.exists() or target.is_symlink():
-            raise FileExistsError(f"F005 refuses to overwrite pretruth cache: {target}")
     temporary = array_path.with_suffix(".npz.partial")
-    try:
-        with temporary.open("xb") as stream:
-            np.savez_compressed(stream, **arrays)
-        temporary.replace(array_path)
-    finally:
+    for target in (array_path, metadata_path, temporary):
+        _require(not target.is_symlink(), "F005 pretruth cache may not use symlinks")
+
+    had_array = array_path.exists()
+    if had_array:
+        _require_exact_arrays(
+            _load_npz_arrays(array_path), arrays,
+            "F005 existing pretruth arrays differ from the rebuilt sealed policy",
+        )
         if temporary.exists():
             temporary.unlink()
-    metadata["arrays_file_sha256"] = _sha_file(array_path)
-    _write_json(metadata_path, metadata)
+    elif temporary.exists():
+        try:
+            partial_arrays = _load_npz_arrays(temporary)
+            _require_exact_arrays(
+                partial_arrays, arrays,
+                "F005 partial pretruth arrays differ from the rebuilt sealed policy",
+            )
+        except Exception:
+            # This fixed-name file is a derived cache owned by this run.  A hard
+            # interruption may leave an unreadable ZIP, which is safe to rebuild.
+            temporary.unlink()
+        else:
+            temporary.replace(array_path)
+    if not array_path.exists():
+        _write_npz_atomic(array_path, arrays)
+
+    metadata = {**metadata_base, "arrays_file_sha256": _sha_file(array_path)}
+    if metadata_path.exists():
+        previous = _read_json(metadata_path)
+        _require(
+            previous.get("schema_version") == PRETRUTH_SCHEMA
+            and previous.get("structure") == structure
+            and previous.get("array_keys") == sorted(arrays)
+            and previous.get("structure_sha256") == metadata_base["structure_sha256"],
+            "F005 existing pretruth metadata differs from the rebuilt sealed policy",
+        )
+        if previous != metadata:
+            # Reaching this branch already proves that both the structure and
+            # every array equal the freshly rebuilt sealed evidence.  Updating
+            # only its byte-hash closes a crash after NPZ repair but before the
+            # metadata commit.
+            _write_json(metadata_path, metadata)
+    else:
+        _write_json(metadata_path, metadata)
     return {
         "metadata_path": str(metadata_path), "arrays_path": str(array_path),
         "metadata_sha256": _sha_file(metadata_path),
@@ -238,6 +339,11 @@ def _save_pretruth(path: Path, pretruth: dict) -> dict:
 def _load_pretruth(path: Path) -> dict:
     metadata_path = Path(path).with_suffix(".json")
     array_path = Path(path).with_suffix(".npz")
+    _require(
+        metadata_path.is_file() and array_path.is_file()
+        and not metadata_path.is_symlink() and not array_path.is_symlink(),
+        "F005 pretruth cache files must be regular",
+    )
     metadata = _read_json(metadata_path)
     _require(
         metadata.get("schema_version") == PRETRUTH_SCHEMA
@@ -369,11 +475,17 @@ class DefaultF005Backend:
     def seal_arm(self, contract: dict, outer: int, scores: dict, path: Path) -> dict:
         from speaker_id.training.f005_runner import select_arm, write_and_reload_seal
         from speaker_id.training.f005_scoring import reload_arm_selection_seal
+        expected = select_arm(contract, outer, scores)
         if path.exists():
-            return reload_arm_selection_seal(path, contract, outer)
-        seal = select_arm(contract, outer, scores)
-        write_and_reload_seal(path, seal)
-        return reload_arm_selection_seal(path, contract, outer)
+            recovered = reload_arm_selection_seal(path, contract, outer)
+            _require(recovered["seal"] == expected,
+                     "F005 recovered arm seal differs from the authenticated score caches")
+            return recovered
+        write_and_reload_seal(path, expected)
+        recovered = reload_arm_selection_seal(path, contract, outer)
+        _require(recovered["seal"] == expected,
+                 "F005 arm seal differs from the authenticated score caches")
+        return recovered
 
     def prepare_policy(self, contract: dict, outer: int, *, public, frozen,
                        selected_embeddings: dict, valid, arm_reload, path: Path) -> dict:
@@ -486,6 +598,7 @@ def _extract_advanced_cache(
     """Extract one explicit row scope into a resumable, server-only cache."""
     from speaker_id.candidates.campp_advanced import extract_advanced_embedding
     from speaker_id.data.splits import truth
+    from speaker_id.training.f005_worker import recover_fixed_partial
     manifest, config = contract["manifest"], contract["config"]
     values = np.asarray(indices)
     _require(
@@ -521,17 +634,37 @@ def _extract_advanced_cache(
         _require(Path(name).name == name and "/" not in name and "\\" not in name,
                  "F005 audio/cache names must be flat")
         target = cache_dir / (Path(name).stem + ".npz")
-        if target.exists():
-            _require(target.is_file() and not target.is_symlink(), "F005 cache entry is not regular")
-            with np.load(target, allow_pickle=False) as saved:
+
+        def load_entry(candidate: Path) -> tuple[np.ndarray, bool]:
+            candidate = Path(candidate)
+            _require(candidate.is_file() and not candidate.is_symlink(),
+                     "F005 cache entry is not regular")
+            with np.load(candidate, allow_pickle=False) as saved:
                 _require(
-                    set(saved.files) == {"embedding", "valid", "signature", "audio_file", "audio_sha256"}
+                    set(saved.files) == {
+                        "embedding", "valid", "signature", "audio_file", "audio_sha256",
+                    }
                     and str(saved["signature"]) == identity["signature"]
                     and str(saved["audio_file"]) == name
                     and str(saved["audio_sha256"]) == row["input_sha256"],
                     "F005 resumed cache entry identity changed",
                 )
-                vector, valid = saved["embedding"].copy(), bool(saved["valid"])
+                candidate_vector = saved["embedding"].copy()
+                candidate_valid = bool(saved["valid"])
+            expected = bool(expected_valid[int(index)])
+            _require(
+                candidate_valid == expected == truth(row["has_nonzero_signal"])
+                and candidate_vector.shape == (192,) and candidate_vector.dtype == np.float32
+                and np.isfinite(candidate_vector).all()
+                and ((np.isclose(np.linalg.norm(candidate_vector), 1.0, atol=1e-5))
+                     if candidate_valid else not np.any(candidate_vector)),
+                "F005 adapted embedding validity or geometry changed",
+            )
+            return candidate_vector, candidate_valid
+
+        recover_fixed_partial(target, load_entry, derived=True)
+        if target.exists():
+            vector, valid = load_entry(target)
         else:
             audio = Path(root) / contract["readiness"]["config"]["data_dir"] / name
             _require(_sha_file(audio) == row["input_sha256"], "F005 audio changed during extraction")
@@ -540,15 +673,16 @@ def _extract_advanced_cache(
             )
             valid = bool(info["nonzero_signal"])
             temporary = target.with_suffix(".npz.partial")
-            if temporary.exists():
-                raise FileExistsError("F005 partial embedding cache requires forensic handling")
             with temporary.open("xb") as stream:
                 np.savez_compressed(
                     stream, embedding=vector, valid=valid,
                     signature=identity["signature"], audio_file=name,
                     audio_sha256=row["input_sha256"],
                 )
+                stream.flush()
+                os.fsync(stream.fileno())
             temporary.replace(target)
+            vector, valid = load_entry(target)
         expected = bool(expected_valid[int(index)])
         _require(
             valid == expected == truth(row["has_nonzero_signal"])
@@ -604,25 +738,35 @@ def _selection_indices(contract: dict, outer: int, valid: np.ndarray) -> np.ndar
 
 def _save_known_scores(path: Path, arm_id: str, contract: dict, scores: dict) -> dict:
     path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
     provenance = json.dumps(scores["provenance"], ensure_ascii=False, sort_keys=True, allow_nan=False)
     temporary = path.with_suffix(".npz.partial")
-    if path.exists() or temporary.exists():
+    if path.exists() or path.is_symlink() or temporary.exists() or temporary.is_symlink():
         raise FileExistsError("F005 refuses to overwrite known-only scores")
-    with temporary.open("xb") as stream:
-        np.savez_compressed(
-            stream,
-            experiment_signature=contract["signature"], arm_id=arm_id,
-            known_calibration_indices=scores["known_calibration_indices"],
-            known_scores=scores["known_scores"],
-            known_labels=np.asarray(scores["known_labels"]),
-            reference_support=scores["reference_support"],
-            provenance=provenance,
-        )
-    temporary.replace(path)
+    try:
+        with temporary.open("xb") as stream:
+            np.savez_compressed(
+                stream,
+                experiment_signature=contract["signature"], arm_id=arm_id,
+                known_calibration_indices=scores["known_calibration_indices"],
+                known_scores=scores["known_scores"],
+                known_labels=np.asarray(scores["known_labels"]),
+                reference_support=scores["reference_support"],
+                provenance=provenance,
+            )
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(path)
+    finally:
+        if temporary.exists() and not temporary.is_symlink():
+            temporary.unlink()
     return {"path": str(path), "sha256": _sha_file(path), "mlflow_uploaded": False}
 
 
 def _load_known_scores(path: Path, arm_id: str, contract: dict) -> dict:
+    path = Path(path)
+    _require(path.is_file() and not path.is_symlink(),
+             "F005 known-only score cache must be a regular file")
     with np.load(path, allow_pickle=False) as saved:
         _require(
             set(saved.files) == {
@@ -640,6 +784,40 @@ def _load_known_scores(path: Path, arm_id: str, contract: dict) -> dict:
             "reference_support": saved["reference_support"].copy(),
             "provenance": json.loads(str(saved["provenance"])),
         }
+
+
+def _recover_known_scores(path: Path, arm_id: str, contract: dict) -> tuple[dict, dict] | None:
+    """Adopt an authenticated final/partial cache left before state persistence."""
+    path = Path(path)
+    temporary = path.with_suffix(".npz.partial")
+    _require(not path.is_symlink() and not temporary.is_symlink(),
+             "F005 known-only score cache may not use symlinks")
+    if path.exists():
+        scores = _load_known_scores(path, arm_id, contract)
+        if temporary.exists():
+            temporary.unlink()
+        return scores, {"path": str(path), "sha256": _sha_file(path), "mlflow_uploaded": False}
+    if not temporary.exists():
+        return None
+    try:
+        scores = _load_known_scores(temporary, arm_id, contract)
+    except Exception:
+        # An interrupted np.savez write is a derived cache, never source evidence.
+        temporary.unlink()
+        return None
+    temporary.replace(path)
+    return scores, {"path": str(path), "sha256": _sha_file(path), "mlflow_uploaded": False}
+
+
+def _verified_known_scores(path: Path, record: dict, arm_id: str, contract: dict) -> dict:
+    path = Path(path)
+    _require(
+        Path(record.get("path", "")).resolve() == path.resolve()
+        and record.get("sha256") == _sha_file(path)
+        and record.get("mlflow_uploaded") is False,
+        "F005 recorded known-only score cache identity changed",
+    )
+    return _load_known_scores(path, arm_id, contract)
 
 
 def _outer_truth_rows(contract: dict, outer: int) -> list[dict]:
@@ -847,19 +1025,44 @@ def execute_f005_experiment(
     binding = backend.load_binding(binding_path, config["mlflow"]["experiment_id"])
     parent_spool = output / "tracking" / "parent"
     if state["parent"] is None:
-        parent = backend.prepare_tracker(
-            project_root=root, spool_dir=parent_spool, binding=binding,
-            run_name=config["run_name"], config=resolved,
-            input_paths=_input_paths(root, config_path, binding_path, config),
-            run_kind="f005_paired_long_short_full_experiment",
-            training_started=True,
-        )
-        _tracker_live(parent, resume=False)
-        state["parent"] = {"spool": str(parent_spool), "run_id": parent.run_id, "status": "RUNNING"}
-        state["status"], state["phase"] = "running", "parent_verified"
+        orphaned_spool = False
+        if parent_spool.exists():
+            try:
+                parent = backend.open_tracker(parent_spool)
+            except (FileNotFoundError, KeyError):
+                _require(not any(parent_spool.iterdir()),
+                         "F005 parent spool preparation is incomplete")
+            else:
+                orphaned_spool = True
+        if not orphaned_spool:
+            parent = backend.prepare_tracker(
+                project_root=root, spool_dir=parent_spool, binding=binding,
+                run_name=config["run_name"], config=resolved,
+                input_paths=_input_paths(root, config_path, binding_path, config),
+                run_kind="f005_paired_long_short_full_experiment",
+                training_started=True,
+            )
+        # Persist the local spool identity before any remote operation.  A
+        # provider/network interruption can then reopen this exact logical run.
+        state["parent"] = {
+            "spool": str(parent_spool), "run_id": parent.run_id, "status": "PREPARED",
+        }
+        state["status"], state["phase"] = "running", "parent_prepared"
+        _save_state(state_path, state)
+        _tracker_live(parent, resume=orphaned_spool)
+        state["parent"].update({"run_id": parent.run_id, "status": "RUNNING"})
+        state["phase"] = "parent_verified"
         _save_state(state_path, state)
     else:
-        parent = backend.open_tracker(Path(state["parent"]["spool"]))
+        _require(
+            Path(state["parent"].get("spool", "")).resolve() == parent_spool.resolve(),
+            "F005 parent spool path changed in resume state",
+        )
+        parent = backend.open_tracker(parent_spool)
+        _require(
+            state["parent"].get("run_id") in {None, parent.run_id},
+            "F005 parent run identity changed in its durable spool",
+        )
         if state["status"] != "complete":
             if (parent.state.get("remote_status") == "FINISHED"
                     and state.get("aggregate") is not None
@@ -886,6 +1089,7 @@ def execute_f005_experiment(
     parent.flush(strict=True); parent.verify_artifacts(); parent.verify_remote_metadata()
 
     active_child = None
+    active_child_key = None
     try:
         # Frozen public/advanced arrays are verified source caches.  Loading them
         # has no optimizer effect and exposes no new outer truth.
@@ -895,22 +1099,47 @@ def execute_f005_experiment(
                  "F005 source validity mask changed")
 
         def child_tracker(key: str, run_name: str, run_kind: str, unit_config: dict):
-            nonlocal active_child
+            nonlocal active_child, active_child_key
             spool = output / "tracking" / "children" / key.replace("/", "__")
             record = state["children"].get(key)
             if record is None:
-                tracker = backend.prepare_tracker(
-                    project_root=root, spool_dir=spool, binding=binding,
-                    run_name=run_name, config={**resolved, "unit": unit_config},
-                    input_paths=_input_paths(root, config_path, binding_path, config),
-                    run_kind=run_kind, training_started=True,
-                    parent_run_id=parent.run_id,
-                )
-                _tracker_live(tracker, resume=False)
-                state["children"][key] = {"spool": str(spool), "run_id": tracker.run_id, "status": "RUNNING"}
+                orphaned_spool = False
+                if spool.exists():
+                    try:
+                        tracker = backend.open_tracker(spool)
+                    except (FileNotFoundError, KeyError):
+                        _require(not any(spool.iterdir()),
+                                 "F005 child spool preparation is incomplete")
+                    else:
+                        orphaned_spool = True
+                if not orphaned_spool:
+                    tracker = backend.prepare_tracker(
+                        project_root=root, spool_dir=spool, binding=binding,
+                        run_name=run_name, config={**resolved, "unit": unit_config},
+                        input_paths=_input_paths(root, config_path, binding_path, config),
+                        run_kind=run_kind, training_started=True,
+                        parent_run_id=parent.run_id,
+                    )
+                record = {
+                    "spool": str(spool), "run_id": tracker.run_id, "status": "PREPARED",
+                }
+                state["children"][key] = record
+                active_child, active_child_key = tracker, key
+                _save_state(state_path, state)
+                _tracker_live(tracker, resume=orphaned_spool)
+                record.update({"run_id": tracker.run_id, "status": "RUNNING"})
                 _save_state(state_path, state)
             else:
-                tracker = backend.open_tracker(Path(record["spool"]))
+                _require(
+                    Path(record.get("spool", "")).resolve() == spool.resolve(),
+                    "F005 child spool path changed in resume state",
+                )
+                tracker = backend.open_tracker(spool)
+                _require(
+                    record.get("run_id") in {None, tracker.run_id},
+                    "F005 child run identity changed in its durable spool",
+                )
+                active_child, active_child_key = tracker, key
                 unit_complete = key in state["heads"] or key in state["tails"]
                 if tracker.state.get("remote_status") == "FINISHED" and unit_complete:
                     tracker.verify_artifacts(); tracker.verify_remote_metadata()
@@ -920,7 +1149,7 @@ def execute_f005_experiment(
                     _tracker_live(tracker, resume=True)
                     record["status"] = "RUNNING"
                     _save_state(state_path, state)
-            active_child = tracker
+            active_child, active_child_key = tracker, key
             return tracker
 
         # All two heads are complete before any tail is fitted.
@@ -928,6 +1157,8 @@ def execute_f005_experiment(
         for outer in config["fold_ids"]:
             key = _unit_key(outer)
             unit_dir = output / "training" / key / "shared_head"
+            checkpoint_path = unit_dir / "shared_head.pt"
+            report_path = unit_dir / "unit_report.json"
             child = child_tracker(
                 key, f"F005-shared-head-fold{outer}", "f005_shared_head",
                 {"stage": "shared_head", "outer_fold": outer, "arm": None},
@@ -935,9 +1166,11 @@ def execute_f005_experiment(
             if key not in state["heads"]:
                 result = backend.fit_head(
                     contract, root, outer, unit_dir, child,
-                    resume=(unit_dir / "shared_head.pt").exists(),
+                    resume=(
+                        (unit_dir / "shared_head.pt").exists()
+                        or (unit_dir / "shared_head.pt.partial").exists()
+                    ),
                 )
-                report_path = unit_dir / "unit_report.json"
                 _write_json(report_path, result["report"])
                 _safe_add_artifact(child, report_path, "training/unit_report.json")
                 child.log_metrics({"fit/completed_steps": result["report"]["completed_steps"]}, sync=False)
@@ -945,20 +1178,32 @@ def execute_f005_experiment(
                 state["heads"][key] = {
                     "checkpoint": str(result["checkpoint"]),
                     "checkpoint_sha256": _sha_file(result["checkpoint"]),
-                    "report": str(report_path), "complete": True,
+                    "report": str(report_path), "report_sha256": _sha_file(report_path),
+                    "complete": True,
                 }
                 _save_state(state_path, state)
+            _verified_training_unit(
+                state["heads"][key], checkpoint_path, report_path,
+            )
             child.finish("FINISHED", strict=True); child.verify_remote_metadata()
             state["children"][key]["status"] = "FINISHED"; _save_state(state_path, state)
-            active_child = None
+            active_child, active_child_key = None, None
 
         # All eight tails start from their fold's exact same shared checkpoint.
         state["phase"] = "training_tails"; _save_state(state_path, state)
         for outer in config["fold_ids"]:
-            shared = Path(state["heads"][_unit_key(outer)]["checkpoint"])
+            head_key = _unit_key(outer)
+            head_dir = output / "training" / head_key / "shared_head"
+            shared = _verified_training_unit(
+                state["heads"][head_key], head_dir / "shared_head.pt",
+                head_dir / "unit_report.json",
+            )
+            shared_sha256 = _sha_file(shared)
             for arm in config["arms"]:
                 arm_id, key = arm["id"], _unit_key(outer, arm["id"])
                 unit_dir = output / "training" / f"fold_{outer}" / "tails" / arm_id
+                checkpoint_path = unit_dir / "last.pt"
+                report_path = unit_dir / "unit_report.json"
                 child = child_tracker(
                     key, f"F005-tail-fold{outer}-{arm_id}", "f005_tail_arm",
                     {"stage": "tail", "outer_fold": outer, "arm": arm},
@@ -966,9 +1211,11 @@ def execute_f005_experiment(
                 if key not in state["tails"]:
                     result = backend.fit_tail(
                         contract, root, outer, arm_id, shared, unit_dir, child,
-                        resume=(unit_dir / "last.pt").exists(),
-                    )
-                    report_path = unit_dir / "unit_report.json"
+                        resume=(
+                            (unit_dir / "last.pt").exists()
+                        or (unit_dir / "last.pt.partial").exists()
+                    ),
+                )
                     _write_json(report_path, result["report"])
                     _safe_add_artifact(child, report_path, "training/unit_report.json")
                     child.log_metrics({"fit/completed_steps": result["report"]["completed_steps"]}, sync=False)
@@ -977,12 +1224,17 @@ def execute_f005_experiment(
                         "checkpoint": str(result["checkpoint"]),
                         "checkpoint_sha256": _sha_file(result["checkpoint"]),
                         "shared_checkpoint_sha256": _sha_file(shared),
-                        "report": str(report_path), "complete": True,
+                        "report": str(report_path), "report_sha256": _sha_file(report_path),
+                        "complete": True,
                     }
                     _save_state(state_path, state)
+                _verified_training_unit(
+                    state["tails"][key], checkpoint_path, report_path,
+                    shared_checkpoint_sha256=shared_sha256,
+                )
                 child.finish("FINISHED", strict=True); child.verify_remote_metadata()
                 state["children"][key]["status"] = "FINISHED"; _save_state(state_path, state)
-                active_child = None
+                active_child, active_child_key = None, None
 
         _require(len(state["heads"]) == 2 and len(state["tails"]) == 8,
                  "F005 requires exactly two complete heads and eight complete tails")
@@ -993,26 +1245,42 @@ def execute_f005_experiment(
         state["phase"] = "known_only_arm_scoring"; _save_state(state_path, state)
         for outer in config["fold_ids"]:
             indices = _selection_indices(contract, outer, valid)
-            shared = Path(state["heads"][_unit_key(outer)]["checkpoint"])
+            head_key = _unit_key(outer)
+            head_dir = output / "training" / head_key / "shared_head"
+            shared = _verified_training_unit(
+                state["heads"][head_key], head_dir / "shared_head.pt",
+                head_dir / "unit_report.json",
+            )
+            shared_sha256 = _sha_file(shared)
             for arm in config["arms"]:
                 arm_id, key = arm["id"], _unit_key(outer, arm["id"])
+                tail_dir = output / "training" / f"fold_{outer}" / "tails" / arm_id
+                tail_checkpoint = _verified_training_unit(
+                    state["tails"][key], tail_dir / "last.pt",
+                    tail_dir / "unit_report.json",
+                    shared_checkpoint_sha256=shared_sha256,
+                )
                 score_path = output / "selection" / f"fold_{outer}" / arm_id / "known_scores.npz"
                 if key not in state["known_scores"]:
-                    extracted = backend.extract_arm(
-                        contract, root, outer, arm_id, shared,
-                        Path(state["tails"][key]["checkpoint"]), indices,
-                        "known_selection", valid,
-                        output / "selection" / f"fold_{outer}" / arm_id / "embedding_cache",
-                        lambda done, total, elapsed, o=outer, a=arm_id: parent.log_metrics(
-                            {f"selection/fold{o}/{a}/files": done,
-                             f"selection/fold{o}/{a}/elapsed_seconds": elapsed},
-                            step=done, sync=(done == total), strict=False,
-                        ),
-                    )
-                    dense = np.asarray(sources["frozen_advanced"]).copy()
-                    dense[indices] = extracted["embeddings"]
-                    scores = backend.known_scores(dense, valid, contract, outer)
-                    receipt = _save_known_scores(score_path, arm_id, contract, scores)
+                    recovered = _recover_known_scores(score_path, arm_id, contract)
+                    if recovered is None:
+                        extracted = backend.extract_arm(
+                            contract, root, outer, arm_id, shared,
+                            tail_checkpoint, indices,
+                            "known_selection", valid,
+                            output / "selection" / f"fold_{outer}" / arm_id / "embedding_cache",
+                            lambda done, total, elapsed, o=outer, a=arm_id: parent.log_metrics(
+                                {f"selection/fold{o}/{a}/files": done,
+                                 f"selection/fold{o}/{a}/elapsed_seconds": elapsed},
+                                step=done, sync=(done == total), strict=False,
+                            ),
+                        )
+                        dense = np.asarray(sources["frozen_advanced"]).copy()
+                        dense[indices] = extracted["embeddings"]
+                        scores = backend.known_scores(dense, valid, contract, outer)
+                        receipt = _save_known_scores(score_path, arm_id, contract, scores)
+                    else:
+                        scores, receipt = recovered
                     state["known_scores"][key] = {
                         **receipt, "adapted_rows": len(indices),
                         "scope": "known_nonouter_only",
@@ -1022,18 +1290,29 @@ def execute_f005_experiment(
                         f"selection/fold{outer}/{arm_id}/known_rows": len(scores["known_calibration_indices"]),
                     }, sync=False)
                     _save_state(state_path, state)
+                else:
+                    record = state["known_scores"][key]
+                    _require(
+                        record.get("adapted_rows") == len(indices)
+                        and record.get("scope") == "known_nonouter_only"
+                        and record.get("unknown_or_outer_arm_embeddings_extracted") is False,
+                        "F005 recorded known-only score scope changed",
+                    )
+                    _verified_known_scores(score_path, record, arm_id, contract)
 
         # Both arm choices are immutable and disk-reloaded before unknown
         # calibration similarities or any arm-specific outer embedding exists.
         state["phase"] = "sealing_arms"; _save_state(state_path, state)
         arm_reloads = {}
         for outer in config["fold_ids"]:
-            score_sets = {
-                arm["id"]: _load_known_scores(
-                    Path(state["known_scores"][_unit_key(outer, arm["id"])]["path"]),
-                    arm["id"], contract,
-                ) for arm in config["arms"]
-            }
+            score_sets = {}
+            for arm in config["arms"]:
+                arm_id = arm["id"]
+                score_path = output / "selection" / f"fold_{outer}" / arm_id / "known_scores.npz"
+                score_sets[arm_id] = _verified_known_scores(
+                    score_path, state["known_scores"][_unit_key(outer, arm_id)],
+                    arm_id, contract,
+                )
             seal_path = output / "selection" / f"fold_{outer}" / "arm_selection_seal.json"
             reload = backend.seal_arm(contract, outer, score_sets, seal_path)
             arm_reloads[outer] = reload
@@ -1062,14 +1341,26 @@ def execute_f005_experiment(
             _require(set(required).issubset({arm["id"] for arm in config["arms"]}),
                      "F005 selected arm is unknown")
             full_arrays[outer] = {}
-            shared = Path(state["heads"][_unit_key(outer)]["checkpoint"])
+            head_key = _unit_key(outer)
+            head_dir = output / "training" / head_key / "shared_head"
+            shared = _verified_training_unit(
+                state["heads"][head_key], head_dir / "shared_head.pt",
+                head_dir / "unit_report.json",
+            )
+            shared_sha256 = _sha_file(shared)
             indices = np.arange(len(contract["manifest"]), dtype=np.int64)
             for arm_id in required:
                 key = _unit_key(outer, arm_id)
+                tail_dir = output / "training" / f"fold_{outer}" / "tails" / arm_id
+                tail_checkpoint = _verified_training_unit(
+                    state["tails"][key], tail_dir / "last.pt",
+                    tail_dir / "unit_report.json",
+                    shared_checkpoint_sha256=shared_sha256,
+                )
                 cache_root = output / "full_scoring" / f"fold_{outer}" / arm_id
                 extracted = backend.extract_arm(
                     contract, root, outer, arm_id, shared,
-                    Path(state["tails"][key]["checkpoint"]), indices,
+                    tail_checkpoint, indices,
                     "full_scoring", valid, cache_root / "embedding_cache",
                     lambda done, total, elapsed, o=outer, a=arm_id: parent.log_metrics(
                         {f"full/fold{o}/{a}/files": done,
@@ -1098,10 +1389,28 @@ def execute_f005_experiment(
         for outer in config["fold_ids"]:
             seal_path = output / "full_scoring" / f"fold_{outer}" / "policy_seal.json"
             cache_base = output / "full_scoring" / f"fold_{outer}" / "pretruth_bundle"
-            if cache_base.with_suffix(".json").exists():
+            cache_metadata = cache_base.with_suffix(".json")
+            cache_arrays = cache_base.with_suffix(".npz")
+            recorded_policy = state["policy_seals"].get(str(outer))
+            if recorded_policy is not None:
+                _require(
+                    Path(recorded_policy.get("path", "")).resolve() == seal_path.resolve()
+                    and recorded_policy.get("file_sha256") == _sha_file(seal_path)
+                    and Path(recorded_policy.get("pretruth_cache", "")).resolve()
+                    == cache_metadata.resolve()
+                    and recorded_policy.get("pretruth_metadata_sha256")
+                    == _sha_file(cache_metadata)
+                    and recorded_policy.get("pretruth_arrays_sha256") == _sha_file(cache_arrays)
+                    and recorded_policy.get("pretruth_cache_mlflow_uploaded") is False,
+                    "F005 recorded policy/pretruth cache identity changed",
+                )
                 pretruth = _load_pretruth(cache_base)
                 policy_reload = backend.reload_policy(seal_path, contract, outer, arm_reloads[outer])
                 pretruth["policy_reload"] = policy_reload
+                pretruth_receipt = {
+                    "metadata_sha256": _sha_file(cache_metadata),
+                    "arrays_sha256": _sha_file(cache_arrays),
+                }
             elif seal_path.exists():
                 policy_reload = backend.reload_policy(seal_path, contract, outer, arm_reloads[outer])
                 pretruth = backend.rebuild_policy(
@@ -1109,20 +1418,22 @@ def execute_f005_experiment(
                     selected_embeddings=full_arrays[outer], valid=valid,
                     arm_reload=arm_reloads[outer], policy_reload=policy_reload,
                 )
-                _save_pretruth(cache_base, pretruth)
+                pretruth_receipt = _save_pretruth(cache_base, pretruth)
             else:
                 pretruth = backend.prepare_policy(
                     contract, outer, public=sources["public"], frozen=sources["frozen_advanced"],
                     selected_embeddings=full_arrays[outer], valid=valid,
                     arm_reload=arm_reloads[outer], path=seal_path,
                 )
-                _save_pretruth(cache_base, pretruth)
                 policy_reload = pretruth["policy_reload"]
+                pretruth_receipt = _save_pretruth(cache_base, pretruth)
             pretruth_by_fold[outer], policy_reloads[outer] = pretruth, policy_reload
             state["policy_seals"][str(outer)] = {
                 "path": str(seal_path), "seal_sha256": policy_reload["seal_sha256"],
                 "file_sha256": policy_reload["file_sha256"], "disk_reloaded": True,
-                "pretruth_cache": str(cache_base.with_suffix(".json")),
+                "pretruth_cache": str(cache_metadata),
+                "pretruth_metadata_sha256": pretruth_receipt["metadata_sha256"],
+                "pretruth_arrays_sha256": pretruth_receipt["arrays_sha256"],
                 "pretruth_cache_mlflow_uploaded": False,
             }
             _safe_add_artifact(parent, seal_path, f"fold_{outer}/policy_seal.json")
@@ -1131,15 +1442,34 @@ def execute_f005_experiment(
                  "F005 all fold policies must be sealed before outer truth")
         parent.flush(strict=True); parent.verify_artifacts(); parent.verify_remote_metadata()
 
+        parity_path = output / "cpu_cuda_prediction_parity.json"
         if state["parity"] is None:
-            parity = backend.verify_parity(pretruth_by_fold)
-            parity_path = output / "cpu_cuda_prediction_parity.json"
-            _write_json(parity_path, parity)
+            verified = backend.verify_parity(pretruth_by_fold)
+            if parity_path.exists():
+                parity = _read_json(parity_path)
+                _require(parity == verified,
+                         "F005 crash-orphaned CPU/CUDA parity evidence changed")
+            else:
+                parity = verified
+                _write_json(parity_path, parity)
             _safe_add_artifact(parent, parity_path, "receipts/cpu_cuda_prediction_parity.json")
             state["parity"] = {**parity, "path": str(parity_path), "file_sha256": _sha_file(parity_path)}
             _save_state(state_path, state)
         else:
-            parity = state["parity"]
+            parity = _read_json(parity_path)
+            _require(
+                state["parity"] == {
+                    **parity, "path": str(parity_path), "file_sha256": _sha_file(parity_path),
+                },
+                "F005 recorded CPU/CUDA parity evidence changed",
+            )
+            _safe_add_artifact(parent, parity_path, "receipts/cpu_cuda_prediction_parity.json")
+
+        _require(parity.get("outer_truth_read") is False,
+                 "F005 parity verification accessed outer truth")
+        _require(parity.get("exact_cpu_cuda_prediction_parity") is True,
+                 "F005 CPU/CUDA prediction parity failed before outer evaluation")
+        parent.flush(strict=True); parent.verify_artifacts(); parent.verify_remote_metadata()
 
         # This flag changes only after both policy seals and parity evidence are
         # durable.  Outer evaluation paths are immutable one-shot receipts.
@@ -1239,10 +1569,10 @@ def execute_f005_experiment(
         _finish_quietly(parent, "FAILED")
         state["status"] = "failed"
         state["failure"] = failure
-        if active_child is not None:
-            for record in state["children"].values():
-                if record.get("run_id") == active_child.run_id:
-                    record["status"] = "FAILED"
+        if active_child is not None and active_child_key in state["children"]:
+            state["children"][active_child_key].update({
+                "run_id": active_child.run_id, "status": "FAILED",
+            })
         if state.get("parent"):
             state["parent"]["status"] = "FAILED"
         _save_state(state_path, state)

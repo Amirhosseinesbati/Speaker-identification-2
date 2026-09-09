@@ -235,7 +235,14 @@ class F005PretruthScoringTests(unittest.TestCase):
                     policy_reload=prepared["policy_reload"],
                 )
             self.assertEqual(recovered_scorer.call_count, 3)
-            self.assertTrue(recovered["recovered_without_policy_refit"])
+            self.assertEqual(set(recovered), set(prepared))
+            for key in set(prepared) - {"score_bundles"}:
+                self.assertEqual(recovered[key], prepared[key])
+            for comparator in scoring.COMPARATORS:
+                self.assertEqual(
+                    scoring._score_evidence(recovered["score_bundles"][comparator]),
+                    scoring._score_evidence(prepared["score_bundles"][comparator]),
+                )
 
             truth = [{
                 "audio_file": "outer.wav", "speaker_id": "k2", "group_id": "g2",

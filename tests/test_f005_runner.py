@@ -126,6 +126,40 @@ class F005RunnerTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "round-trip"):
                 runner.write_and_reload_seal(Path(directory) / "seal.json", seal)
 
+    def test_recovered_arm_seal_must_match_authenticated_score_caches(self):
+        from speaker_id.training.f005_experiment import DefaultF005Backend
+
+        contract, vectors, valid = scoring_fixture()
+        base = runner.known_selection_scores(vectors, valid, contract, 0)
+        indices = base["known_calibration_indices"]
+        truth = [
+            contract["labels"].index(contract["manifest"][int(index)]["speaker_id"]) - 1
+            for index in indices
+        ]
+        arms = {}
+        for position, arm in enumerate(runner.ARM_IDS):
+            item = deepcopy(base)
+            item["known_scores"] = np.full_like(base["known_scores"], -1)
+            for row, target in enumerate(truth):
+                chosen = target if arm == "control" else (target + position) % 446
+                item["known_scores"][row, chosen] = 1
+            arms[arm] = item
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "selection.json"
+            backend = DefaultF005Backend()
+            self.assertEqual(
+                backend.seal_arm(contract, 0, arms, path)["seal"]["selected_arm"],
+                "control",
+            )
+            changed = deepcopy(arms)
+            changed["control"]["known_scores"], changed["treatment_mse0"]["known_scores"] = (
+                changed["treatment_mse0"]["known_scores"].copy(),
+                changed["control"]["known_scores"].copy(),
+            )
+            with self.assertRaisesRegex(ValueError, "differs from the authenticated score"):
+                backend.seal_arm(contract, 0, changed, path)
+
 
 if __name__ == "__main__":
     unittest.main()

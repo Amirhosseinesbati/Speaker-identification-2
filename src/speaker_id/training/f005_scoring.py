@@ -617,7 +617,6 @@ def rebuild_pretruth_from_policy_seal(
         "score_bundles": score_bundles,
         "policy_reload": policies,
         "outer_truth_read": False,
-        "recovered_without_policy_refit": True,
     }
 
 

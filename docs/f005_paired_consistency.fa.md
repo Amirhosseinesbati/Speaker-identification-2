@@ -54,8 +54,10 @@ probe محدود یک backward در FP32، بدون optimizer step:
 scripts/infra/run_f005.sh --execute-probe --outer-fold 0
 ```
 
-launcher مقدار `CUBLAS_WORKSPACE_CONFIG=:4096:8` و سه متغیر thread را پیش از
-ورود Python تنظیم می‌کند. worker از deterministic-algorithms با حالت خطا استفاده
+launcher مقدار `CUBLAS_WORKSPACE_CONFIG=:4096:8`، marker ثابت
+`VAST_INSTANCE_ID=50288952` و سه متغیر thread را پیش از ورود Python تنظیم می‌کند.
+این marker با readiness و پیکربندی Supervisor یکسان است. worker از
+deterministic-algorithms با حالت خطا استفاده
 می‌کند؛ warning قابل ادامه پذیرفته نمی‌شود. خود worker نیز مستقل از orchestrator،
 receipt واقعی `audio_hashes_checked=True` و تطابق `VAST_INSTANCE_ID` با readiness
 را پیش از ساخت Torch/model الزام می‌کند.
@@ -63,8 +65,12 @@ receipt واقعی `audio_hashes_checked=True` و تطابق `VAST_INSTANCE_ID` 
 پس از موفقیت probe، launcher کامل فقط با گیت صریح زیر قابل اجراست:
 
 ```bash
-.venv/bin/python scripts/run_f005_experiment.py --execute
+scripts/infra/install_f005_supervisor.sh
+supervisorctl start speaker_id_campp_f005
 ```
+
+installer فقط job را ثبت و صحت‌سنجی می‌کند و آن را شروع نمی‌کند؛ فرمان دوم شروع
+صریح اجرای کامل است.
 
 این launcher یک parent و ده child در MLflow می‌سازد: دو shared-head و هشت tail.
 هر دو انتخاب known-only و هر سه policy هر fold پیش از نخستین دسترسی به outer truth
@@ -72,6 +78,21 @@ receipt واقعی `audio_hashes_checked=True` و تطابق `VAST_INSTANCE_ID` 
 می‌یابد و stage کامل‌شده دوباره آموزش نمی‌بیند. برای اجرای پس‌زمینه، اسکریپت
 `scripts/infra/install_f005_supervisor.sh` job را با `autostart=false` و
 `autorestart=false` ثبت می‌کند؛ شروع job همچنان یک عمل دستی و جداست.
+فرمان Supervisor مسیر منطقی ثابت `F005_supervised_primary` را استفاده می‌کند.
+اجرای نخست آن مسیر را می‌سازد، اجرای دوباره پس از وقفه همان state امضاشده را
+resume می‌کند و اجرای دوباره پس از تکمیل فقط نتیجهٔ مهرشده را بازمی‌گرداند؛ در
+نتیجه restart دستی نمی‌تواند ناخواسته یک run آموزشی تکراری بسازد. گزینهٔ
+`--resume-dir` برای بازیابی صریح اپراتور همچنان موجود است.
+
+هویت spool محلی parent و هر child پیش از نخستین عملیات remote در state پایدار
+می‌شود؛ بنابراین خطای شبکه یا قطع provider همان run را باز می‌کند و run تازه‌ای
+نمی‌سازد. checkpoint و embedding دارای staging ثابت `.partial` هستند: فایل نهایی
+خراب هرگز جایگزین نمی‌شود، checkpoint فقط پس از load کامل encoder، head، optimizer
+و RNG پذیرفته می‌شود، و partial مشتق‌شدهٔ ناقص از منبع pin‌شده بازسازی می‌شود.
+آخرین خط ناقص history حذف می‌شود و gap، تکرار یا جابه‌جایی stepها fail-closed است.
+cacheهای known-score و pretruth که پس از commit فایل و پیش از commit state یتیم
+مانده‌اند فقط پس از تطابق هویت و آرایه‌ها بازیابی می‌شوند. شکست parity دقیق
+CPU/CUDA پیش از تغییر `outer_truth_materialized` اجرای outer را متوقف می‌کند.
 
 checkpoint، optimizer، embedding، صوت خام و credential هرگز به MLflow فرستاده
 نمی‌شوند. checkpointهای میانی، cacheها و armهای ناموفق روی سرور می‌مانند؛ انتقال

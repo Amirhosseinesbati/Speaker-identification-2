@@ -31,7 +31,7 @@ umask 077
 cat >"$TEMPORARY" <<'EOF'
 [program:speaker_id_campp_f005]
 directory=/workspace/Speaker-identification-2-c002
-command=/workspace/Speaker-identification-2-c002/.venv/bin/python /workspace/Speaker-identification-2-c002/scripts/infra/with_project_env.py /workspace/Speaker-identification-2-c002/.venv/bin/python /workspace/Speaker-identification-2-c002/scripts/run_f005_experiment.py --config /workspace/Speaker-identification-2-c002/configs/train/campp_f005_consistency.json --binding /workspace/Speaker-identification-2-c002/artifacts/infrastructure/C002_preparation/mlflow_state.json --execute
+command=/workspace/Speaker-identification-2-c002/.venv/bin/python /workspace/Speaker-identification-2-c002/scripts/infra/with_project_env.py /workspace/Speaker-identification-2-c002/.venv/bin/python /workspace/Speaker-identification-2-c002/scripts/run_f005_experiment.py --config /workspace/Speaker-identification-2-c002/configs/train/campp_f005_consistency.json --binding /workspace/Speaker-identification-2-c002/artifacts/infrastructure/C002_preparation/mlflow_state.json --managed-run-dir /workspace/Speaker-identification-2-c002/artifacts/training/f005_consistency/F005_supervised_primary --execute
 user=root
 numprocs=1
 autostart=false

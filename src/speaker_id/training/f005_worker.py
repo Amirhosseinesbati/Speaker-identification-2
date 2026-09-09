@@ -250,13 +250,254 @@ def state_dict_sha256(state: dict) -> str:
     return digest.hexdigest()
 
 
+def _fixed_partial_path(path: Path) -> Path:
+    path = Path(path)
+    return path.with_suffix(path.suffix + ".partial")
+
+
+def _present(path: Path) -> bool:
+    """Include dangling symlinks when checking an internal artifact path."""
+    return path.exists() or path.is_symlink()
+
+
+def _require_regular_file(path: Path, kind: str) -> None:
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(f"F005 {kind} must be a regular non-symlink file: {path}")
+
+
+def _fsync_directory(path: Path) -> None:
+    """Persist directory entries on platforms that expose directory fsync."""
+    if os.name != "posix":
+        return
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def recover_fixed_partial(path: Path, validate, *, derived: bool) -> str:
+    """Recover one exact ``<artifact>.partial`` without masking a bad final.
+
+    ``validate`` must fully validate the bytes at the supplied path.  A final
+    file is always validated before its partial is considered, and a valid
+    final always wins.  Thus corrupt
+    final bytes are retained and never overwritten, while a newer staging
+    checkpoint may cost at most one checkpoint interval.  Invalid partials are
+    discarded only when the caller marks the artifact as reconstructable.
+
+    The function deliberately touches one caller-supplied path and its fixed
+    sibling only.  It never scans a directory or follows a symlink.
+    """
+    path = Path(path)
+    partial = _fixed_partial_path(path)
+    if type(derived) is not bool or not callable(validate):
+        raise TypeError("F005 partial recovery requires a validator and explicit derived policy")
+
+    if _present(path):
+        _require_regular_file(path, "final artifact")
+        validate(path)  # A bad final must stop recovery unchanged.
+        if not _present(partial):
+            return "final"
+        _require_regular_file(partial, "partial artifact")
+        try:
+            validate(partial)
+        except Exception:
+            # Once the final is known-good, its staging sibling is redundant.
+            partial.unlink()
+            _fsync_directory(path.parent)
+            return "discarded_invalid_partial"
+        partial.unlink()
+        _fsync_directory(path.parent)
+        return "final"
+
+    if not _present(partial):
+        return "missing"
+    _require_regular_file(partial, "partial artifact")
+    try:
+        validate(partial)
+    except Exception:
+        if not derived:
+            raise
+        partial.unlink()
+        _fsync_directory(path.parent)
+        return "discarded_invalid_partial"
+
+    # A hard link publishes the validated bytes atomically without replacing a
+    # final that might have appeared after the absence check.
+    try:
+        os.link(partial, path)
+    except FileExistsError:
+        _require_regular_file(path, "final artifact")
+        validate(path)  # Leave both if the racing final is bad.
+        partial.unlink()
+        _fsync_directory(path.parent)
+        return "final"
+    partial.unlink()
+    _fsync_directory(path.parent)
+    return "recovered"
+
+
 def _atomic_checkpoint(payload: dict, path: Path) -> None:
     import torch
-    temporary = path.with_suffix(path.suffix + ".partial")
-    if temporary.exists():
+    path = Path(path)
+    temporary = _fixed_partial_path(path)
+    if path.is_symlink() or (path.exists() and not path.is_file()):
+        raise ValueError("F005 checkpoint target must be a regular non-symlink file")
+    if _present(temporary):
         raise FileExistsError("F005 partial checkpoint requires explicit forensic handling")
-    torch.save(payload, temporary)
+    with temporary.open("xb") as stream:
+        torch.save(payload, stream)
+        stream.flush()
+        os.fsync(stream.fileno())
     temporary.replace(path)
+    _fsync_directory(path.parent)
+
+
+def _optimizer_update_counts(metadata: dict) -> tuple[int, int]:
+    """Return exact encoder/head Adam update counts from validated metadata."""
+    if not isinstance(metadata, dict):
+        raise ValueError("F005 checkpoint metadata is required for optimizer validation")
+    schedule = metadata.get("schedule_state")
+    completed = metadata.get("completed_steps")
+    if (type(completed) is not int or completed < 0 or not isinstance(schedule, dict)
+            or type(schedule.get("head_only_completed_steps")) is not int
+            or type(schedule.get("tail_completed_steps")) is not int
+            or schedule.get("completed_steps") != completed):
+        raise ValueError("F005 checkpoint schedule metadata is malformed")
+    head_only = schedule["head_only_completed_steps"]
+    tail = schedule["tail_completed_steps"]
+    if head_only < 0 or tail < 0 or head_only + tail != completed:
+        raise ValueError("F005 checkpoint optimizer counts disagree with its schedule")
+    if metadata.get("stage") == "shared_head" and tail != 0:
+        raise ValueError("F005 shared-head checkpoint cannot contain tail updates")
+    if metadata.get("stage") not in {"shared_head", "tail"}:
+        raise ValueError("F005 checkpoint stage is malformed")
+    return tail, completed
+
+
+def _validate_training_state_structure(payload: dict, encoder, head, optimizer,
+                                       metadata: dict) -> None:
+    """Validate every state field without mutating live training objects."""
+    import torch
+
+    for kind, saved, expected in (
+            ("encoder", payload["encoder"], encoder.state_dict()),
+            ("head", payload["head"], head.state_dict())):
+        if not isinstance(saved, dict) or set(saved) != set(expected):
+            raise ValueError(f"F005 checkpoint {kind} state keys are malformed")
+        for name, value in saved.items():
+            if (not isinstance(value, torch.Tensor)
+                    or value.shape != expected[name].shape
+                    or value.dtype != expected[name].dtype
+                    or (value.is_floating_point() and not bool(torch.isfinite(value).all()))):
+                raise ValueError(f"F005 checkpoint {kind} state is nonfinite or malformed")
+
+    expected_updates = _optimizer_update_counts(metadata)
+    saved_optimizer = payload["optimizer"]
+    expected_optimizer = optimizer.state_dict()
+    if (not isinstance(saved_optimizer, dict)
+            or set(saved_optimizer) != {"state", "param_groups"}
+            or not isinstance(saved_optimizer["state"], dict)
+            or not isinstance(saved_optimizer["param_groups"], list)
+            or len(saved_optimizer["param_groups"]) != len(expected_optimizer["param_groups"])
+            or len(optimizer.param_groups) != len(expected_optimizer["param_groups"])
+            or len(optimizer.param_groups) != len(expected_updates)):
+        raise ValueError("F005 checkpoint optimizer structure is malformed")
+    parameters, required_state = {}, set()
+    for group_index, (saved_group, expected_group, live_group) in enumerate(zip(
+            saved_optimizer["param_groups"], expected_optimizer["param_groups"],
+            optimizer.param_groups, strict=True)):
+        if (not isinstance(saved_group, dict) or set(saved_group) != set(expected_group)
+                or not isinstance(saved_group.get("params"), list)
+                or len(saved_group["params"]) != len(expected_group["params"])
+                or saved_group["params"] != expected_group["params"]
+                or len(saved_group["params"]) != len(live_group["params"])):
+            raise ValueError("F005 checkpoint optimizer parameter groups are malformed")
+        for name, expected_value in expected_group.items():
+            if name in {"params", "lr"}:
+                continue
+            if saved_group[name] != expected_value:
+                raise ValueError("F005 checkpoint optimizer hyperparameters changed")
+        if (not isinstance(saved_group.get("lr"), (int, float))
+                or not np.isfinite(float(saved_group["lr"])) or float(saved_group["lr"]) < 0):
+            raise ValueError("F005 checkpoint optimizer learning rate is malformed")
+        for identifier, parameter in zip(saved_group["params"], live_group["params"], strict=True):
+            if type(identifier) is not int or identifier in parameters:
+                raise ValueError("F005 checkpoint optimizer parameter identity is malformed")
+            parameters[identifier] = (
+                parameter, expected_updates[group_index], saved_group.get("amsgrad") is True)
+            if expected_updates[group_index] > 0:
+                required_state.add(identifier)
+
+    allowed_state = {"step", "exp_avg", "exp_avg_sq", "max_exp_avg_sq"}
+    if set(saved_optimizer["state"]) != required_state:
+        raise ValueError("F005 checkpoint optimizer state coverage is incomplete")
+    for identifier, state in saved_optimizer["state"].items():
+        if type(identifier) is not int or identifier not in parameters:
+            raise ValueError("F005 checkpoint optimizer state references an unknown parameter")
+        parameter, update_count, amsgrad = parameters[identifier]
+        required_fields = {"step", "exp_avg", "exp_avg_sq"}
+        if amsgrad:
+            required_fields.add("max_exp_avg_sq")
+        if (not isinstance(state, dict) or set(state) != required_fields
+                or not set(state).issubset(allowed_state)):
+            raise ValueError("F005 checkpoint optimizer state fields are malformed")
+        for name, value in state.items():
+            if not isinstance(value, torch.Tensor):
+                raise ValueError("F005 checkpoint optimizer state must contain tensors")
+            if name == "step":
+                if (value.device.type != "cpu" or value.dtype != torch.float32
+                        or value.ndim != 0 or float(value) != update_count):
+                    raise ValueError("F005 checkpoint optimizer step disagrees with metadata")
+            elif (value.device.type != "cpu" or value.shape != parameter.shape
+                  or value.dtype != parameter.dtype):
+                raise ValueError("F005 checkpoint optimizer tensor shape, dtype, or device changed")
+            if value.is_floating_point() and not bool(torch.isfinite(value).all()):
+                raise ValueError("F005 checkpoint optimizer state is nonfinite")
+
+    torch_rng, cuda_rng = payload["torch_rng"], payload["cuda_rng"]
+    expected_torch_rng = torch.get_rng_state()
+    expected_cuda_rng = torch.cuda.get_rng_state_all()
+    if (not isinstance(torch_rng, torch.Tensor)
+            or torch_rng.device != expected_torch_rng.device
+            or torch_rng.dtype != expected_torch_rng.dtype
+            or torch_rng.shape != expected_torch_rng.shape
+            or torch_rng.numel() != expected_torch_rng.numel()
+            or not isinstance(cuda_rng, list) or len(cuda_rng) != len(expected_cuda_rng)
+            or any(not isinstance(item, torch.Tensor)
+                   or item.device != expected.device or item.dtype != expected.dtype
+                   or item.shape != expected.shape or item.numel() != expected.numel()
+                   for item, expected in zip(cuda_rng, expected_cuda_rng, strict=True))):
+        raise ValueError("F005 checkpoint RNG state is malformed")
+    try:
+        torch.Generator(device="cpu").set_state(torch_rng)
+        for device_index, item in enumerate(cuda_rng):
+            torch.Generator(device=f"cuda:{device_index}").set_state(item)
+    except RuntimeError as error:
+        raise ValueError("F005 checkpoint RNG state is malformed") from error
+
+
+def _load_training_state(payload: dict, encoder, head, optimizer, metadata: dict) -> None:
+    """Load state only after the complete payload passed pure validation."""
+    import torch
+
+    _validate_training_state_structure(payload, encoder, head, optimizer, metadata)
+    encoder.load_state_dict(payload["encoder"], strict=True)
+    head.load_state_dict(payload["head"], strict=True)
+    optimizer.load_state_dict(payload["optimizer"])
+    torch.set_rng_state(payload["torch_rng"].cpu())
+    torch.cuda.set_rng_state_all([item.cpu() for item in payload["cuda_rng"]])
+
+
+def _validate_training_checkpoint(path: Path, validate_payload, encoder, head, optimizer) -> dict:
+    """Validate checkpoint identity and state structure without live mutation."""
+    import torch
+
+    payload = torch.load(path, map_location="cpu", weights_only=True)
+    metadata = validate_payload(payload)
+    _validate_training_state_structure(payload, encoder, head, optimizer, metadata)
+    return metadata
 
 
 def _load_advanced_trainable(contract: dict, root: Path, device: str):
@@ -318,11 +559,68 @@ def _components(contract: dict, root: Path, outer: int):
     return encoder, head, optimizer, trainable, initialization_seed
 
 
-def _trim_history(path: Path, completed_steps: int) -> None:
-    if path.exists():
-        rows = [line for line in path.read_text(encoding="utf-8").splitlines()
-                if int(json.loads(line)["step"]) <= completed_steps]
-        path.write_text("\n".join(rows) + ("\n" if rows else ""), encoding="utf-8")
+def _trim_history(path: Path, completed_steps: int, *, first_step: int = 1) -> None:
+    """Atomically trim post-checkpoint rows and one torn final JSONL record."""
+    path = Path(path)
+    if (type(completed_steps) is not int or type(first_step) is not int
+            or first_step <= 0 or completed_steps < first_step - 1):
+        raise ValueError("F005 history checkpoint range is invalid")
+    if not _present(path):
+        if completed_steps >= first_step:
+            raise ValueError("F005 fit history is missing rows committed by its checkpoint")
+        return
+    _require_regular_file(path, "fit history")
+    original = path.read_bytes()
+    if not original:
+        if completed_steps >= first_step:
+            raise ValueError("F005 fit history is shorter than its committed checkpoint")
+        return
+
+    terminated = original.endswith(b"\n")
+    encoded_rows = original.split(b"\n")
+    if terminated:
+        encoded_rows.pop()
+    rows, expected_step = [], first_step
+    for index, encoded in enumerate(encoded_rows):
+        if encoded.endswith(b"\r"):
+            encoded = encoded[:-1]
+        try:
+            line = encoded.decode("utf-8")
+            value = json.loads(line)
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            if index == len(encoded_rows) - 1 and not terminated:
+                break
+            raise ValueError("F005 fit history contains malformed JSON before its final tail") from error
+        if (not isinstance(value, dict) or type(value.get("step")) is not int
+                or value["step"] <= 0):
+            raise ValueError("F005 fit history row has an invalid step")
+        if value["step"] != expected_step:
+            raise ValueError("F005 fit history steps are not a contiguous increasing prefix")
+        expected_step += 1
+        if value["step"] <= completed_steps:
+            rows.append(line)
+
+    if completed_steps >= first_step and expected_step - 1 < completed_steps:
+        raise ValueError("F005 fit history is shorter than its committed checkpoint")
+
+    repaired = ("\n".join(rows) + ("\n" if rows else "")).encode("utf-8")
+    if repaired == original:
+        return
+    temporary = path.with_name("." + path.name + ".repair.partial")
+    if _present(temporary):
+        _require_regular_file(temporary, "fit history repair staging file")
+        temporary.unlink()
+    try:
+        with temporary.open("xb") as stream:
+            stream.write(repaired)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(path)
+        _fsync_directory(path.parent)
+    finally:
+        if _present(temporary):
+            _require_regular_file(temporary, "fit history repair staging file")
+            temporary.unlink()
 
 
 def _run_updates(contract, root, outer, arm, encoder, head, optimizer, start_step, stop_step,
@@ -400,11 +698,16 @@ def _run_updates(contract, root, outer, arm, encoder, head, optimizer, start_ste
             "fit/io_cache_hits": io_stats["cache_hits"], "fit/io_decode_misses": io_stats["decode_misses"],
             "fit/elapsed_seconds": time.monotonic() - started,
         }
+        checkpoint_due = ((step + 1) % fit["checkpoint_every_steps"] == 0
+                          or step + 1 == stop_step)
         with history_path.open("a", encoding="utf-8", newline="\n") as handle:
             handle.write(json.dumps({"step": step + 1, "phase": phase, **metrics}, allow_nan=False) + "\n")
+            if checkpoint_due:
+                handle.flush()
+                os.fsync(handle.fileno())
         if tracker is not None:
             tracker.log_metrics(metrics, step=step + 1, sync=(step + 1) % 10 == 0, strict=False)
-        if (step + 1) % fit["checkpoint_every_steps"] == 0 or step + 1 == stop_step:
+        if checkpoint_due:
             save_checkpoint(step + 1)
     return {"elapsed_seconds": time.monotonic() - started, "waveforms_cached": len(waveform_cache),
             "waveform_cache_bytes": waveform_cache.bytes,
@@ -423,17 +726,33 @@ def fit_shared_head(contract: dict, root: Path, outer: int, output: Path, tracke
     plan_hash = plan_range_sha256(contract, outer, 0, head_steps)
     identity = shared_head_identity(contract, outer, plan_sha256=plan_hash)
     checkpoint, history = output / "shared_head.pt", output / "fit_history.jsonl"
+    checkpoint_present = _present(checkpoint) or _present(_fixed_partial_path(checkpoint))
+    if checkpoint_present and not resume:
+        raise FileExistsError("Existing F005 shared-head checkpoint requires explicit resume")
     encoder, head, optimizer, trainable, seed = _components(contract, root, outer)
     initial_encoder, initial_head = state_dict_sha256(encoder.state_dict()), state_dict_sha256(head.state_dict())
+    validate_checkpoint = lambda candidate: _validate_training_checkpoint(
+        candidate,
+        lambda payload: validate_shared_head_payload(payload, identity, fit),
+        encoder, head, optimizer,
+    )
+    recovery = (recover_fixed_partial(checkpoint, validate_checkpoint, derived=True)
+                if checkpoint_present else "missing")
     start = 0
-    if checkpoint.exists():
-        if not resume: raise FileExistsError("Existing F005 shared-head checkpoint requires explicit resume")
+    if _present(checkpoint):
         payload = torch.load(checkpoint, map_location="cpu", weights_only=True)
-        metadata = validate_shared_head_payload(payload, identity, fit); start = metadata["completed_steps"]
-        encoder.load_state_dict(payload["encoder"], strict=True); head.load_state_dict(payload["head"], strict=True)
-        optimizer.load_state_dict(payload["optimizer"]); torch.set_rng_state(payload["torch_rng"].cpu())
-        torch.cuda.set_rng_state_all([item.cpu() for item in payload["cuda_rng"]]); _trim_history(history, start)
-    elif resume: raise FileNotFoundError("F005 shared-head resume requested without checkpoint")
+        metadata = validate_shared_head_payload(payload, identity, fit)
+        _load_training_state(payload, encoder, head, optimizer, metadata)
+        start = metadata["completed_steps"]
+        _trim_history(history, start, first_step=1)
+    else:
+        if checkpoint_present and recovery == "discarded_invalid_partial":
+            # Validation is pure: rejecting a torn staging file cannot alter
+            # deterministic source initialization before a step-zero restart.
+            if (state_dict_sha256(encoder.state_dict()) != initial_encoder
+                    or state_dict_sha256(head.state_dict()) != initial_head):
+                raise RuntimeError("F005 checkpoint validation mutated source initialization")
+        _trim_history(history, 0, first_step=1)
     control = contract["config"]["arms"][0]
     def save(completed):
         _atomic_checkpoint({"metadata": shared_head_checkpoint_metadata(identity, fit, completed),
@@ -474,18 +793,31 @@ def fit_tail_arm(contract: dict, root: Path, outer: int, arm_id: str, shared_hea
     identity = arm_identity(contract, outer, arm_id, shared_head_checkpoint_sha256=shared_sha,
                             tail_plan_sha256=tail_plan)
     checkpoint, history = output / "last.pt", output / "fit_history.jsonl"
+    checkpoint_present = _present(checkpoint) or _present(_fixed_partial_path(checkpoint))
+    if checkpoint_present and not resume:
+        raise FileExistsError("Existing F005 tail checkpoint requires explicit resume")
     encoder, head, optimizer, trainable, seed = _components(contract, root, outer)
+    _validate_training_state_structure(shared_payload, encoder, head, optimizer, shared_metadata)
+    fork_encoder = state_dict_sha256(shared_payload["encoder"])
+    fork_head = state_dict_sha256(shared_payload["head"])
+    validate_checkpoint = lambda candidate: _validate_training_checkpoint(
+        candidate,
+        lambda payload: validate_resume_payload(payload, identity, fit),
+        encoder, head, optimizer,
+    )
+    if checkpoint_present:
+        recover_fixed_partial(checkpoint, validate_checkpoint, derived=True)
     start = head_steps
-    if checkpoint.exists():
-        if not resume: raise FileExistsError("Existing F005 tail checkpoint requires explicit resume")
+    if _present(checkpoint):
         payload = torch.load(checkpoint, map_location="cpu", weights_only=True)
-        metadata = validate_resume_payload(payload, identity, fit); start = metadata["completed_steps"]
-    elif resume: raise FileNotFoundError("F005 tail resume requested without checkpoint")
-    else: payload = shared_payload
-    encoder.load_state_dict(payload["encoder"], strict=True); head.load_state_dict(payload["head"], strict=True)
-    optimizer.load_state_dict(payload["optimizer"]); torch.set_rng_state(payload["torch_rng"].cpu())
-    torch.cuda.set_rng_state_all([item.cpu() for item in payload["cuda_rng"]]); _trim_history(history, start)
-    fork_encoder, fork_head = state_dict_sha256(encoder.state_dict()), state_dict_sha256(head.state_dict())
+        metadata = validate_resume_payload(payload, identity, fit)
+        _load_training_state(payload, encoder, head, optimizer, metadata)
+        start = metadata["completed_steps"]
+    else:
+        # Missing or discarded tail state is reconstructed from the validated
+        # byte-identical shared-head fork source.
+        _load_training_state(shared_payload, encoder, head, optimizer, shared_metadata)
+    _trim_history(history, start, first_step=head_steps + 1)
     def save(completed):
         _atomic_checkpoint({"metadata": checkpoint_metadata(identity, fit, completed),
             "encoder": encoder.state_dict(), "head": head.state_dict(), "optimizer": optimizer.state_dict(),

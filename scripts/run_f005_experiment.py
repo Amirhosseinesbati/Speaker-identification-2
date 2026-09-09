@@ -30,7 +30,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--binding", type=Path,
         default=Path("artifacts/infrastructure/C002_preparation/mlflow_state.json"),
     )
-    parser.add_argument("--resume-dir", type=Path)
+    execution_directory = parser.add_mutually_exclusive_group()
+    execution_directory.add_argument("--resume-dir", type=Path)
+    execution_directory.add_argument(
+        "--managed-run-dir", type=Path,
+        help=(
+            "Stable run directory for a process supervisor: create it on the "
+            "first invocation, resume it after interruption, and return the "
+            "sealed result without retraining after completion"
+        ),
+    )
     parser.add_argument(
         "--verify-audio", action="store_true",
         help="Hash every installed audio file during validation",
@@ -58,8 +67,10 @@ def main(argv: list[str] | None = None) -> int:
         verify_sources=args.execute or args.verify_sources,
     )
     if not args.execute:
-        if args.resume_dir is not None:
-            raise ValueError("--resume-dir is accepted only with explicit --execute")
+        if args.resume_dir is not None or args.managed_run_dir is not None:
+            raise ValueError(
+                "--resume-dir/--managed-run-dir are accepted only with explicit --execute"
+            )
         from speaker_id.training.f005_runner import execution_plan, probe_receipt
         result = {
             "status": "validated_no_training",
@@ -76,11 +87,39 @@ def main(argv: list[str] | None = None) -> int:
 
     binding_path = _confined(args.binding, "artifacts/infrastructure")
     resume = None
+    output = None
     if args.resume_dir is not None:
         resume = _confined(args.resume_dir, "artifacts/training/f005_consistency")
+    elif args.managed_run_dir is not None:
+        unresolved = (
+            args.managed_run_dir if args.managed_run_dir.is_absolute()
+            else ROOT / args.managed_run_dir
+        )
+        managed = _confined(
+            args.managed_run_dir,
+            "artifacts/training/f005_consistency",
+            existing=unresolved.exists(),
+        )
+        if managed.exists():
+            state_path = managed / "experiment_state.json"
+            if state_path.is_file() and not state_path.is_symlink():
+                resume = managed
+            elif managed.is_dir() and not managed.is_symlink() and not any(managed.iterdir()):
+                # A hard kill can occur in the tiny mkdir→initial-state window.
+                # Removing this exact empty directory makes the same supervised
+                # logical path safely creatable again.
+                managed.rmdir()
+                output = managed
+            else:
+                raise ValueError(
+                    "Managed F005 directory exists without a valid experiment state"
+                )
+        else:
+            output = managed
     from speaker_id.training.f005_experiment import execute_f005_experiment
     result = execute_f005_experiment(
-        contract, ROOT, config_path, binding_path, resume_dir=resume,
+        contract, ROOT, config_path, binding_path,
+        resume_dir=resume, output_dir=output,
     )
     print(json.dumps({
         "status": result["status"], "resumed": result["resumed"],
