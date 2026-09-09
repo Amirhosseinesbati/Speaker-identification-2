@@ -196,6 +196,35 @@ class QmfSuiteTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(first["replicates"], 20)
         self.assertEqual(first["true_class_strata"], 2)
+        self.assertEqual(first["population_preflight"]["content_groups"], 4)
+        self.assertEqual(first["population_preflight"]["mixed_label_content_groups"], 0)
+
+    def test_bootstrap_preflight_rejects_mixed_label_groups(self):
+        contract = {
+            "labels": ["unknown", "known"],
+            "manifest": [
+                {"audio_file": "u.wav", "speaker_id": "unknown"},
+                {"audio_file": "k.wav", "speaker_id": "known"},
+            ],
+            "folds": [
+                {"audio_file": "u.wav", "group_id": "shared-content"},
+                {"audio_file": "k.wav", "group_id": "shared-content"},
+            ],
+        }
+        message = (
+            r"1 content group\(s\) covering 2 row\(s\) mix true classes; "
+            r"whole-group preservation and true-class stratification cannot both be satisfied"
+        )
+        with self.assertRaisesRegex(ValueError, message):
+            suite._validate_bootstrap_population(contract)
+
+    def test_mixed_group_preflight_precedes_mlflow_run_creation(self):
+        source = inspect.getsource(suite.execute)
+        preflight = source.index("bootstrap_population = _validate_bootstrap_population(contract)")
+        parent_creation = source.index("parent = DurableMLflowRun.prepare")
+        child_creation = source.index("tracker = DurableMLflowRun.prepare")
+        self.assertLess(preflight, parent_creation)
+        self.assertLess(preflight, child_creation)
 
 
 if __name__ == "__main__":

@@ -682,7 +682,42 @@ def _read_sealed_predictions(fold: dict, recipe: str) -> tuple[np.ndarray, np.nd
         return arrays["outer_indices"].copy(), arrays[recipe].copy()
 
 
+def _validate_bootstrap_population(contract: dict) -> dict:
+    """Prove that S017's grouped/class-stratified bootstrap can be formed."""
+    label_index = {label: index for index, label in enumerate(contract["labels"])}
+    fold_rows = {row["audio_file"]: row for row in contract["folds"]}
+    grouped_labels: dict[str, set[int]] = {}
+    grouped_rows: dict[str, int] = {}
+    for row in contract["manifest"]:
+        audio_file = row["audio_file"]
+        _require(audio_file in fold_rows, "Bootstrap population is missing a fold row")
+        group = fold_rows[audio_file]["group_id"]
+        _require(isinstance(group, str) and group, "Bootstrap population has an empty content group")
+        _require(row["speaker_id"] in label_index, "Bootstrap population contains an unknown true label")
+        grouped_labels.setdefault(group, set()).add(label_index[row["speaker_id"]])
+        grouped_rows[group] = grouped_rows.get(group, 0) + 1
+
+    mixed = [group for group, labels in grouped_labels.items() if len(labels) != 1]
+    mixed_rows = sum(grouped_rows[group] for group in mixed)
+    _require(
+        not mixed,
+        "S017 preregistered bootstrap is infeasible: "
+        f"{len(mixed)} content group(s) covering {mixed_rows} row(s) mix true classes; "
+        "whole-group preservation and true-class stratification cannot both be satisfied. "
+        "Close S017 as failed/no-promotion and preregister a new experiment for any replacement bootstrap.",
+    )
+    return {
+        "status": "compatible",
+        "kind": "paired_true_class_stratified_content_group",
+        "content_groups": len(grouped_labels),
+        "mixed_label_content_groups": 0,
+        "mixed_label_rows": 0,
+        "true_class_strata": len({next(iter(labels)) for labels in grouped_labels.values()}),
+    }
+
+
 def _bootstrap(contract: dict, before: list[dict], after: list[dict], config: dict) -> dict:
+    population = _validate_bootstrap_population(contract)
     label_index = {label: index for index, label in enumerate(contract["labels"])}
     old = {row["audio_file"]: label_index[row["speaker_id"]] for row in before}
     new = {row["audio_file"]: label_index[row["speaker_id"]] for row in after}
@@ -695,7 +730,7 @@ def _bootstrap(contract: dict, before: list[dict], after: list[dict], config: di
     for group in sorted(set(groups.tolist())):
         indices = np.flatnonzero(groups == group)
         values = np.unique(truth[indices])
-        _require(len(values) == 1, "Bootstrap content group mixes true classes")
+        _require(len(values) == 1, "Bootstrap population changed after preflight")
         strata.setdefault(int(values[0]), []).append(indices)
     rng = np.random.default_rng(config["bootstrap"]["seed"])
     deltas = np.empty(config["bootstrap"]["replicates"], dtype=np.float64)
@@ -713,7 +748,8 @@ def _bootstrap(contract: dict, before: list[dict], after: list[dict], config: di
         "replicates": len(deltas), "lower": float(lower), "median": float(np.median(deltas)),
         "upper": float(upper), "positive_fraction": float(np.mean(deltas > 0)),
         "delta_array_sha256": _array_sha(deltas), "true_class_strata": len(strata),
-        "content_groups": int(sum(len(values) for values in strata.values()))}
+        "content_groups": int(sum(len(values) for values in strata.values())),
+        "population_preflight": population}
 
 
 def _promotion(config: dict, baseline: dict, selector: dict, bootstrap: dict,
@@ -795,6 +831,10 @@ def execute(root: Path, config_path: Path, binding_path: Path) -> dict:
     contract = load_contract(root / READINESS_CONFIG, root, verify_audio=False)
     _require(len(contract["manifest"]) == 4529 and len(contract["labels"]) == 447,
              "S017 data/label population changed")
+    # This guard intentionally precedes source loading and DurableMLflowRun.prepare.
+    # The registered S017 bootstrap cannot preserve a cluster that spans labels
+    # while also assigning that cluster to one true-class stratum.
+    bootstrap_population = _validate_bootstrap_population(contract)
     source = _verify_source(root, config, contract)
     execution = _execution_environment(config)
     binding = ExperimentBinding(**_json(binding_path)["binding"])
@@ -810,6 +850,7 @@ def execute(root: Path, config_path: Path, binding_path: Path) -> dict:
         "cache_array_sha256": source["array_sha256"]}
     resolved = {"suite": config, "source_binding": source_binding, "execution": execution,
         "data_input_hashes": contract["input_hashes"], "limitations": LIMITATIONS,
+        "bootstrap_population_preflight": bootstrap_population,
         "outer_truth_sealing": "both folds sealed before any outer metric",
         "retention": "server-only unless final promotion passes"}
     write_json(output / "resolved_config.json", resolved)
