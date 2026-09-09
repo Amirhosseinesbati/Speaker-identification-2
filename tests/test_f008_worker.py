@@ -398,6 +398,10 @@ class F008WorkerTorchTests(unittest.TestCase):
         self.assertEqual(events[0], recorded)
         self.assertEqual(events[0]["step"], 601)
         self.assertEqual(events[0]["phase"], "tail")
+        self.assertGreater(events[0]["fit/encoder_gradient_norm_preclip"], 0.0)
+        self.assertGreater(events[0]["fit/head_gradient_norm_preclip"], 0.0)
+        self.assertGreater(events[0]["fit/total_gradient_norm_preclip"], 0.0)
+        self.assertEqual(events[0]["fit/gradient_norm"], events[0]["fit/total_gradient_norm_preclip"])
         self.assertTrue(all(
             isinstance(value, (str, int, float)) and not isinstance(value, (dict, list))
             for value in events[0].values()

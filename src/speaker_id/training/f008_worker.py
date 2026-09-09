@@ -952,10 +952,14 @@ def _run_tail_updates(
             unknown_sampling_seed=unknown_sampling_seed, cache=cache, io_stats=io_stats,
         )
         parameters = [parameter for parameter in encoder.parameters() if parameter.requires_grad]
-        parameters += list(head.parameters())
+        head_parameters = list(head.parameters())
+        encoder_gradient_norm = _grad_norm(parameters)
+        head_gradient_norm = _grad_norm(head_parameters)
+        parameters += head_parameters
         gradient = torch.nn.utils.clip_grad_norm_(parameters, fit["gradient_clip_norm"])
         if not bool(torch.isfinite(gradient).item()):
             raise FloatingPointError(f"F008 nonfinite gradient at step {step}; optimizer not advanced")
+        total_gradient_norm = float(gradient.detach().cpu())
         optimizer.step()
         count = float(fit["batch_pairs"])
         metrics = {
@@ -969,7 +973,12 @@ def _run_tail_updates(
             "fit/long_accuracy": aggregate["known_long_correct"] / count,
             "fit/oe_full_batch_views": aggregate["oe_full_batch_views"],
             "fit/unknown_aam_target_assigned": aggregate["unknown_aam_target_assigned"],
-            "fit/gradient_norm": float(gradient.detach().cpu()),
+            "fit/encoder_gradient_norm_preclip": encoder_gradient_norm,
+            "fit/head_gradient_norm_preclip": head_gradient_norm,
+            "fit/total_gradient_norm_preclip": total_gradient_norm,
+            # Retain the original key for existing live dashboards; it is the
+            # same pre-clipping total returned by PyTorch.
+            "fit/gradient_norm": total_gradient_norm,
             "fit/encoder_lr": float(scheduled["encoder_lr"]),
             "fit/head_lr": float(scheduled["head_lr"]),
             "fit/margin": float(scheduled["margin"]),
