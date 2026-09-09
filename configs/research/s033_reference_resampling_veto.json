@@ -27,6 +27,11 @@
     "tie_break": "lowest_threshold_least_intervention",
     "outer_labels_forbidden_until_sealed": true
   },
+  "replay": {
+    "outer_baseline": "saved_c002b_probability_artifact",
+    "require_exact_argmax": true,
+    "maximum_absolute_probability_drift": 0.000002
+  },
   "screen_gate": {
     "minimum_pooled_macro_f1": 0.9585282892229405,
     "require_positive_each_fold": true,

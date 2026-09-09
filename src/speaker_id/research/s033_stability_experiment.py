@@ -1,10 +1,10 @@
 """Tracked, nested screen for the S033 frozen-winner stability veto.
 
-S033 is deliberately narrow.  It replays C002b exactly, then asks whether a
-*frozen* known prediction survives balanced re-sampling of a role-disjoint
-known enrollment gallery.  The postprocessor may only veto a known prediction
-to ``unknown``.  It cannot rerank known speakers, refit an encoder, or touch
-audio/model files.
+S033 is deliberately narrow.  It uses C002b's saved probability artifact as
+the exact frozen outer baseline, then asks whether a *frozen* known prediction
+survives balanced re-sampling of a role-disjoint known enrollment gallery. The
+postprocessor may only veto a known prediction to ``unknown``.  It cannot
+rerank known speakers, refit an encoder, or touch audio/model files.
 """
 from __future__ import annotations
 
@@ -48,6 +48,7 @@ BASELINE_ERRORS = {
     "unknown_to_known": 60,
     "known_to_other_known": 12,
 }
+REPLAY_PROBABILITY_ATOL = 2e-6
 
 
 def _require(condition: bool, message: str) -> None:
@@ -93,6 +94,40 @@ def _compact_metrics(metrics: dict) -> dict:
     return {key: value for key, value in metrics.items() if key != "per_class"}
 
 
+def _attest_historical_replay(historical: np.ndarray, replayed: np.ndarray,
+                              historical_names: list[str], replayed_names: list[str], *,
+                              probability_atol: float = REPLAY_PROBABILITY_ATOL) -> dict:
+    """Accept only harmless floating-point drift around immutable C002b labels.
+
+    C002b's saved probability artifact remains the sole outer baseline.  A
+    fresh scorer replay is used only to recover its inner score arrays for
+    nested S033 selection.  The current server can differ from the historical
+    probability bytes at the last few floating-point places, so the replay
+    must retain every row identity and every argmax and stay within a narrow,
+    recorded absolute tolerance.  Anything larger fails closed.
+    """
+    _require(type(probability_atol) in {int, float} and math.isfinite(float(probability_atol))
+             and 0.0 < float(probability_atol) <= REPLAY_PROBABILITY_ATOL,
+             "C002b replay tolerance is invalid")
+    historical, replayed = np.asarray(historical), np.asarray(replayed)
+    _require(historical_names == replayed_names and historical.shape == replayed.shape
+             and historical.ndim == 2 and historical.shape[1] == 447,
+             "C002b replay row identity or probability shape changed")
+    difference = np.abs(historical - replayed)
+    max_abs = float(difference.max())
+    same_argmax = bool(np.array_equal(historical.argmax(axis=1), replayed.argmax(axis=1)))
+    _require(np.isfinite(difference).all() and max_abs <= float(probability_atol) and same_argmax,
+             "C002b historical replay exceeds numerical tolerance or changes a frozen prediction")
+    return {
+        "saved_probability_artifact_is_outer_baseline": True,
+        "exact_probability_arrays": bool(np.array_equal(historical, replayed)),
+        "exact_prediction_argmax": same_argmax,
+        "probability_atol": float(probability_atol),
+        "maximum_absolute_difference": max_abs,
+        "mean_absolute_difference": float(difference.mean()),
+    }
+
+
 def _valid_thresholds(values) -> list[float]:
     _require(isinstance(values, list) and values, "S033 threshold grid must be a nonempty list")
     result = [float(value) for value in values]
@@ -108,7 +143,7 @@ def validate_config(config: dict) -> dict:
     _require(isinstance(config, dict), "S033 config must be an object")
     required = {
         "schema_version", "experiment_code", "run_name", "hypothesis", "source",
-        "output_root", "fold_ids", "sampling", "selection", "screen_gate",
+        "output_root", "fold_ids", "sampling", "selection", "replay", "screen_gate",
         "tracking", "retention",
     }
     _require(set(config) == required, "S033 config fields changed")
@@ -148,6 +183,11 @@ def validate_config(config: dict) -> dict:
              and selection["outer_labels_forbidden_until_sealed"] is True,
              "S033 inner-selection protocol changed")
     _valid_thresholds(selection["threshold_grid"])
+    _require(config["replay"] == {
+        "outer_baseline": "saved_c002b_probability_artifact",
+        "require_exact_argmax": True,
+        "maximum_absolute_probability_drift": REPLAY_PROBABILITY_ATOL,
+    }, "S033 C002b replay policy changed")
     gate = config["screen_gate"]
     _require(set(gate) == {
         "minimum_pooled_macro_f1", "require_positive_each_fold", "minimum_unknown_to_known_reduction",
@@ -270,8 +310,10 @@ def _build_fold_pretruth(
         vectors["public"], vectors["advanced"], valid, contract["manifest"], contract["folds"], labels,
         outer, policy,
     )
-    _require(replayed_names == historical_names and np.array_equal(replayed_probabilities, historical_probabilities),
-             f"C002b exact probability replay failed for fold {outer}")
+    replay_attestation = _attest_historical_replay(
+        historical_probabilities, replayed_probabilities, historical_names, replayed_names,
+        probability_atol=config["replay"]["maximum_absolute_probability_drift"],
+    )
     outer_indices = np.asarray(score["outer_indices"], dtype=np.int64)
     _require([contract["manifest"][int(index)]["audio_file"] for index in outer_indices] == historical_names,
              "S033 C002b outer row order differs from its probability artifact")
@@ -351,7 +393,7 @@ def _build_fold_pretruth(
         "schema_version": SCHEMA_VERSION, "outer_fold": outer,
         "outer_truth_accessed": False, "source": source, "c002_cache": c002_cache,
         "policy": policy, "historical_probability_artifact": historical_receipt,
-        "exact_c002b_probability_replay": True,
+        "c002b_replay_attestation": replay_attestation,
         "sampling": {
             "n_resamples": sampling["n_resamples"], "per_class": sampling["per_class"],
             "seed": sampling["seed"] + outer, "replace": sampling["replace"],

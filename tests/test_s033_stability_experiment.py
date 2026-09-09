@@ -8,13 +8,32 @@ import unittest
 
 import numpy as np
 
-from speaker_id.research.s033_stability_experiment import _select_threshold, validate_config
+from speaker_id.research.s033_stability_experiment import (
+    _attest_historical_replay,
+    _select_threshold,
+    validate_config,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class S033ExperimentTests(unittest.TestCase):
+    def test_historical_replay_allows_only_tiny_probability_drift_without_an_argmax_change(self):
+        historical = np.asarray([[.7, .2, .1], [.1, .8, .1]], dtype=np.float64)
+        # The production helper intentionally requires 447 columns; pad the
+        # fixture with inert zero-probability labels while preserving argmax.
+        historical = np.pad(historical, ((0, 0), (0, 444)), constant_values=0.0)
+        replayed = historical.copy()
+        replayed[0, 1] += 1e-7
+        receipt = _attest_historical_replay(historical, replayed, ["a", "b"], ["a", "b"])
+        self.assertFalse(receipt["exact_probability_arrays"])
+        self.assertTrue(receipt["exact_prediction_argmax"])
+        changed = replayed.copy()
+        changed[0, 0], changed[0, 1] = .1, .9
+        with self.assertRaisesRegex(ValueError, "frozen prediction"):
+            _attest_historical_replay(historical, changed, ["a", "b"], ["a", "b"])
+
     def test_threshold_selection_uses_inner_labels_and_prefers_less_intervention_on_ties(self):
         # Stability .0 identifies the two false accepts; .75 removes both and
         # improves F1.  It must be selected without access to an outer row.
