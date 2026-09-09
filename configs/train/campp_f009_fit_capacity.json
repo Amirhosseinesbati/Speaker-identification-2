@@ -79,5 +79,11 @@
       "private_label_reports"
     ]
   },
+  "data_verification": {
+    "mode": "installed_manifest_sha256"
+  },
+  "expected_workspace": "/workspace/Speaker-identification-2-c002",
+  "expected_gpu": "RTX 3090",
+  "minimum_gpu_memory_gib": 20,
   "expected_vast_instance_id": 50288952
 }
