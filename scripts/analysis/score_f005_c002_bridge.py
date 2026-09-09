@@ -25,6 +25,14 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
 
+    # C002b's saved float64 probabilities were produced with this environment.
+    # Attest before importing NumPy through the bridge so exact replay is not
+    # weakened by a different BLAS reduction order.
+    from speaker_id.infrastructure.numerical_environment import (
+        attest_c002_preimport_thread_environment,
+    )
+    numerical_receipt = attest_c002_preimport_thread_environment()
+
     from speaker_id.evaluation.scoring_bridge import (
         analyze_f005_control_under_c002b_policy,
         write_scoring_bridge,
@@ -34,6 +42,7 @@ def main() -> None:
         args.f005_dir, args.c002_run_dir, args.c002b_dir,
         args.manifest, args.folds, args.label_map,
     )
+    report["numerical_environment"] = numerical_receipt
     write_scoring_bridge(args.output_dir, report)
     result = report["f005_control_under_fixed_c002b_policy"]
     print(json.dumps({
