@@ -71,6 +71,20 @@ class ReferenceResamplingTests(unittest.TestCase):
         # promote the runner-up speaker 1.  The invalid final row also fails closed.
         np.testing.assert_array_equal(result, [0, 1, 0, 0])
 
+    def test_group_excluded_draw_is_repaired_from_permitted_rows(self):
+        references, _, reference_groups, galleries = self.reference_fixture()
+        # The first fixed draw selects class-1 row 0, which belongs to the
+        # query group.  The scorer must replace it with class-1 row 1, never
+        # use the excluded row, and still produce a finite veto feature.
+        repaired = replace(galleries, indices=np.asarray([[[0], [2]]], dtype=np.int64))
+        stability = frozen_winner_stability(
+            np.asarray([[1., 0., 0.]], dtype=np.float32), np.asarray([True]),
+            np.asarray(["a0"], dtype=object), references,
+            np.ones(4, dtype=bool), reference_groups, repaired, np.asarray([1]),
+        )
+        self.assertEqual(stability.shape, (1,))
+        self.assertTrue(np.isfinite(stability[0]))
+
     def test_invalid_embeddings_and_empty_group_exclusion_are_rejected(self):
         references, labels, reference_groups, galleries = self.reference_fixture()
         with self.assertRaisesRegex(ValueError, "unit normalized"):
@@ -84,7 +98,7 @@ class ReferenceResamplingTests(unittest.TestCase):
         full_class_gallery = make_balanced_resampled_galleries(
             np.arange(4), labels, n_resamples=1, per_class=2, seed=4
         )
-        with self.assertRaisesRegex(ValueError, "group exclusion leaves an empty class"):
+        with self.assertRaisesRegex(ValueError, "group exclusion leaves no complete class gallery"):
             frozen_winner_stability(
                 np.asarray([[1., 0., 0.]], dtype=np.float32), np.asarray([True]), np.asarray(["same"], dtype=object),
                 references, np.ones(4, dtype=bool), grouped, full_class_gallery, np.asarray([1]),

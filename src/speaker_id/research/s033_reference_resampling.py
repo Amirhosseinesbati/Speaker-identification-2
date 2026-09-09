@@ -8,6 +8,7 @@ alternative identity.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 from numbers import Integral
 
 import numpy as np
@@ -24,6 +25,9 @@ class ResampledGalleries:
     source_labels: np.ndarray
     class_labels: np.ndarray
     indices: np.ndarray
+    seed: int
+    per_class: int
+    replace: bool
 
 
 def _frozen_copy(values: np.ndarray) -> np.ndarray:
@@ -137,6 +141,9 @@ def make_balanced_resampled_galleries(
         source_labels=_frozen_copy(labels),
         class_labels=_frozen_copy(class_labels),
         indices=_frozen_copy(galleries),
+        seed=seed,
+        per_class=per_class,
+        replace=bool(replace),
     )
 
 
@@ -147,17 +154,64 @@ def _validate_galleries(galleries: ResampledGalleries, n_references: int, unknow
     source_labels = _integer_vector("gallery source_labels", galleries.source_labels)
     class_labels = _integer_vector("gallery class_labels", galleries.class_labels)
     sampled = np.asarray(galleries.indices)
+    seed = _require_count("gallery seed", galleries.seed, minimum=0)
+    per_class = _require_count("gallery per_class", galleries.per_class)
     if (len(source_indices) != len(source_labels) or len(np.unique(source_indices)) != len(source_indices)
             or np.any(source_indices < 0) or np.any(source_indices >= n_references)
             or np.any(source_labels == unknown_label) or np.any(class_labels == unknown_label)
             or len(class_labels) < 2 or not np.array_equal(class_labels, np.unique(source_labels))
             or sampled.ndim != 3 or sampled.shape[0] < 1 or sampled.shape[1] != len(class_labels)
-            or sampled.shape[2] < 1 or not np.issubdtype(sampled.dtype, np.integer)):
+            or sampled.shape[2] != per_class or not np.issubdtype(sampled.dtype, np.integer)
+            or not isinstance(galleries.replace, (bool, np.bool_))):
         raise ValueError("malformed balanced resampled galleries")
     for class_position, label in enumerate(class_labels):
         permitted = source_indices[source_labels == label]
         if not len(permitted) or not np.isin(sampled[:, class_position, :], permitted).all():
             raise ValueError("gallery rows do not match their registered class")
+
+
+def _query_draw_rows(
+    galleries: ResampledGalleries,
+    reference_groups: np.ndarray,
+    query_group: str,
+    draw_position: int,
+    class_position: int,
+) -> np.ndarray:
+    """Repair a fixed draw using only references permitted for this query.
+
+    A group-excluded calibration query can legitimately share a label with
+    some reference rows.  Dropping such rows from a globally sampled gallery
+    would sometimes leave a class empty purely by chance.  We deterministically
+    fill those slots from the remaining *permitted* rows; if none exist, the
+    caller fails closed instead of silently admitting the query group.
+    """
+    label = int(np.asarray(galleries.class_labels)[class_position])
+    source_indices = np.asarray(galleries.source_indices)
+    source_labels = np.asarray(galleries.source_labels)
+    allowed_pool = source_indices[
+        (source_labels == label) & (reference_groups[source_indices] != query_group)
+    ]
+    per_class = int(galleries.per_class)
+    if not len(allowed_pool) or (not galleries.replace and len(allowed_pool) < per_class):
+        raise ValueError("group exclusion leaves no complete class gallery")
+
+    base_rows = np.asarray(galleries.indices)[draw_position, class_position]
+    retained = base_rows[reference_groups[base_rows] != query_group]
+    if not galleries.replace:
+        retained = np.unique(retained)
+    retained = retained[:per_class]
+    needed = per_class - len(retained)
+    if not needed:
+        return retained
+    pool = allowed_pool if galleries.replace else allowed_pool[~np.isin(allowed_pool, retained)]
+    if not galleries.replace and len(pool) < needed:
+        raise ValueError("group exclusion leaves no complete class gallery")
+    digest = hashlib.sha256(
+        f"{galleries.seed}|{query_group}|{draw_position}|{class_position}".encode("utf-8")
+    ).digest()
+    generator = np.random.default_rng(int.from_bytes(digest[:8], "little", signed=False))
+    fill = generator.choice(pool, size=needed, replace=bool(galleries.replace))
+    return np.concatenate((retained, np.asarray(fill, dtype=retained.dtype)))
 
 
 def frozen_winner_stability(
@@ -174,9 +228,11 @@ def frozen_winner_stability(
 ) -> np.ndarray:
     """Return the fraction of gallery draws retaining each frozen known winner.
 
-    A query's entire content group is removed before each class maximum.  The
-    function rejects any draw for which that exclusion leaves an empty class,
-    rather than allowing a hidden self-reference or a partial class ranking.
+    A query's entire content group is removed before each class maximum.  A
+    fixed draw which happened to include an excluded row is repaired only from
+    that class's remaining allowed references.  If an entire class has no
+    permitted reference, the call fails rather than allowing a hidden
+    self-reference or a partial class ranking.
     Invalid queries and baseline-unknown rows receive stability zero and are
     never scored.
     """
@@ -209,12 +265,12 @@ def frozen_winner_stability(
     sampled = np.asarray(galleries.indices)
     for query_position in np.flatnonzero(known):
         retained = 0
-        for draw in sampled:
+        for draw_position, draw in enumerate(sampled):
             maxima = np.empty(len(class_labels), dtype=np.float64)
-            for class_position, rows in enumerate(draw):
-                allowed = rows[reference_groups[rows] != query_groups[query_position]]
-                if not len(allowed):
-                    raise ValueError("group exclusion leaves an empty class in a resampled gallery")
+            for class_position, _ in enumerate(draw):
+                allowed = _query_draw_rows(
+                    galleries, reference_groups, query_groups[query_position], draw_position, class_position,
+                )
                 maxima[class_position] = np.max(queries[query_position] @ references[allowed].T)
             retained += int(class_labels[int(np.argmax(maxima))] == baseline[query_position])
         stability[query_position] = retained / len(sampled)
