@@ -18,10 +18,12 @@ from collections import defaultdict
 from collections.abc import Mapping, Sequence
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import time
-from typing import Any
+from numbers import Real
+from typing import Any, Callable
 
 import numpy as np
 
@@ -63,6 +65,7 @@ from speaker_id.training.schedules import adaptation_checkpoint_state, adaptatio
 
 F008_TAIL_CHECKPOINT_SCHEMA = "f008-open-set-oe-tail-checkpoint-v1"
 F008_GRADIENT_PROBE_SCHEMA = "f008-open-set-oe-gradient-probe-v1"
+F008_RUNTIME_RECEIPT_SCHEMA = "f008-runtime-receipt-v1"
 F008_TRAINABLE_ARM_IDS = ("energy_005", "uniform_005")
 _SHA256_CHARACTERS = frozenset("0123456789abcdef")
 
@@ -111,6 +114,182 @@ def _f008_signature(config_or_contract: Mapping[str, object]) -> str:
     if supplied is None:
         return config_signature(config)
     return _sha256(supplied, "experiment signature")
+
+
+def _runtime_binding(
+    f008_config_or_contract: Mapping[str, object], f005_contract: Mapping[str, object],
+) -> tuple[dict[str, Any], str, str, str]:
+    """Return the small, immutable runtime binding without reading audio or Torch.
+
+    F008 deliberately inherits F005's authorized Vast marker.  This is a
+    narrow identity check, not a second readiness or audio audit: the F005
+    source/role receipts have already been authenticated before a tail can be
+    reached.
+    """
+    config = _f008_config(f008_config_or_contract)
+    f008_signature = _f008_signature(f008_config_or_contract)
+    _require(
+        f008_signature == config_signature(config),
+        "F008 runtime requires a configuration-matching experiment signature",
+    )
+    _require(isinstance(f005_contract, Mapping), "F008 runtime requires an F005 contract")
+    f005_signature = _sha256(f005_contract.get("signature"), "F005 experiment signature")
+    _require(
+        f005_signature == config["source_f005"]["experiment_signature"],
+        "F008 runtime F005 signature differs from the declared source",
+    )
+    f005_config = f005_contract.get("config")
+    readiness = f005_contract.get("readiness")
+    _require(isinstance(f005_config, Mapping) and isinstance(readiness, Mapping),
+             "F008 runtime requires F005 config and readiness evidence")
+    expected_instance = readiness.get("config", {}).get("expected_vast_instance_id")
+    _require(
+        (type(expected_instance) is int and expected_instance > 0)
+        or (isinstance(expected_instance, str) and expected_instance.isdecimal()),
+        "F008 runtime F005 expected Vast instance is invalid",
+    )
+    expected_instance_text = str(expected_instance)
+    execution = config["execution"]
+    _require(
+        f005_config.get("execution") == execution
+        and f005_config.get("device") == config["device"] == "cuda"
+        and f005_config.get("cpu_threads") == config["cpu_threads"] == 4,
+        "F008 runtime execution differs from the authenticated F005 source",
+    )
+    return config, f008_signature, f005_signature, expected_instance_text
+
+
+def attest_f008_runtime(
+    f008_config_or_contract: Mapping[str, object], f005_contract: Mapping[str, object],
+) -> dict[str, Any]:
+    """Perform F008's one targeted CUDA check and issue a reusable receipt.
+
+    The launcher calls this exactly once for a logical F008 run.  It must run
+    before a model is constructed: CUBLAS and numerical thread variables are
+    checked before importing Torch.  It intentionally does not re-read the
+    manifest or hash audio; those costly source checks belong to F005's sealed
+    readiness evidence.
+    """
+    config, f008_signature, f005_signature, expected_instance = _runtime_binding(
+        f008_config_or_contract, f005_contract,
+    )
+    execution = config["execution"]
+    expected_threads = execution["thread_environment"]
+    _require(
+        os.environ.get("VAST_INSTANCE_ID") == expected_instance,
+        "F008 runtime requires F005's authorized Vast instance marker",
+    )
+    # These checks intentionally precede the local Torch import.
+    _require(
+        os.environ.get("CUBLAS_WORKSPACE_CONFIG") == execution["cublas_workspace_config"] == ":4096:8",
+        "F008 requires CUBLAS_WORKSPACE_CONFIG=:4096:8 before Torch import",
+    )
+    _require(
+        all(os.environ.get(key) == value for key, value in expected_threads.items()),
+        "F008 numerical thread environment differs from the execution contract",
+    )
+    _require(
+        config["training"]["mixed_precision"] is False
+        and execution["tensor_dtype"] == "float32"
+        and execution["no_cpu_fallback"] is True
+        and execution["deterministic_algorithms"] == "enforce_error",
+        "F008 FP32 deterministic execution policy changed",
+    )
+    import torch
+
+    _require(config["device"] == "cuda" and torch.cuda.is_available(),
+             "F008 requires CUDA and forbids CPU fallback")
+    gpu_name = torch.cuda.get_device_name(0)
+    _require(execution["gpu_name_contains"] in gpu_name,
+             "F008 requires the authorized RTX 3090")
+    torch.set_num_threads(config["cpu_threads"])
+    torch.backends.cudnn.benchmark = False
+    torch.use_deterministic_algorithms(True, warn_only=False)
+    _require(
+        torch.get_default_dtype() == torch.float32
+        and torch.get_num_threads() == config["cpu_threads"]
+        and torch.are_deterministic_algorithms_enabled() is True
+        and torch.backends.cudnn.benchmark is False,
+        "F008 runtime could not enforce the declared FP32 deterministic settings",
+    )
+    body = {
+        "schema_version": F008_RUNTIME_RECEIPT_SCHEMA,
+        "f008_signature": f008_signature,
+        "source_f005_signature": f005_signature,
+        "expected_vast_instance_id": expected_instance,
+        "vast_instance_id": expected_instance,
+        "execution": execution,
+        "device": "cuda",
+        "cuda_available": True,
+        "gpu_name": gpu_name,
+        "cpu_threads": config["cpu_threads"],
+        "torch_default_dtype": "float32",
+        "torch_num_threads": config["cpu_threads"],
+        "deterministic_algorithms_enabled": True,
+        "cudnn_benchmark": False,
+        "cublas_checked_before_torch_import": True,
+        "thread_environment_checked_before_torch_import": True,
+        "checked_once_per_logical_run": True,
+    }
+    return {**body, "receipt_sha256": _sha(body)}
+
+
+def validate_f008_runtime_receipt(
+    receipt: Mapping[str, object], f008_config_or_contract: Mapping[str, object],
+    f005_contract: Mapping[str, object],
+) -> dict[str, Any]:
+    """Validate the one-time F008 runtime receipt without rebuilding a model."""
+    config, f008_signature, f005_signature, expected_instance = _runtime_binding(
+        f008_config_or_contract, f005_contract,
+    )
+    _require(isinstance(receipt, Mapping), "F008 worker requires a runtime receipt")
+    value = dict(receipt)
+    body = {key: item for key, item in value.items() if key != "receipt_sha256"}
+    required = {
+        "schema_version", "f008_signature", "source_f005_signature",
+        "expected_vast_instance_id", "vast_instance_id", "execution", "device",
+        "cuda_available", "gpu_name", "cpu_threads", "torch_default_dtype",
+        "torch_num_threads", "deterministic_algorithms_enabled", "cudnn_benchmark",
+        "cublas_checked_before_torch_import", "thread_environment_checked_before_torch_import",
+        "checked_once_per_logical_run",
+    }
+    _require(set(body) == required and set(value) == required | {"receipt_sha256"},
+             "F008 runtime receipt schema changed")
+    _require(
+        value.get("receipt_sha256") == _sha(body)
+        and body.get("schema_version") == F008_RUNTIME_RECEIPT_SCHEMA
+        and body.get("f008_signature") == f008_signature
+        and body.get("source_f005_signature") == f005_signature
+        and body.get("expected_vast_instance_id") == expected_instance
+        and body.get("vast_instance_id") == expected_instance
+        and body.get("execution") == config["execution"]
+        and body.get("device") == "cuda"
+        and body.get("cuda_available") is True
+        and isinstance(body.get("gpu_name"), str)
+        and config["execution"]["gpu_name_contains"] in body["gpu_name"]
+        and body.get("cpu_threads") == config["cpu_threads"]
+        and body.get("torch_default_dtype") == "float32"
+        and body.get("torch_num_threads") == config["cpu_threads"]
+        and body.get("deterministic_algorithms_enabled") is True
+        and body.get("cudnn_benchmark") is False
+        and body.get("cublas_checked_before_torch_import") is True
+        and body.get("thread_environment_checked_before_torch_import") is True
+        and body.get("checked_once_per_logical_run") is True,
+        "F008 runtime receipt is invalid or belongs to another run",
+    )
+    # These are inexpensive launch-marker checks, not a repeated CUDA or data
+    # audit.  They stop a receipt from being replayed by a differently launched
+    # process before it constructs a live model.
+    _require(os.environ.get("VAST_INSTANCE_ID") == expected_instance,
+             "F008 runtime receipt is being replayed on another Vast instance")
+    _require(os.environ.get("CUBLAS_WORKSPACE_CONFIG") == config["execution"]["cublas_workspace_config"],
+             "F008 runtime receipt is being replayed without its CUBLAS setting")
+    _require(
+        all(os.environ.get(key) == item
+            for key, item in config["execution"]["thread_environment"].items()),
+        "F008 runtime receipt is being replayed with another thread environment",
+    )
+    return value
 
 
 def f008_arm(config_or_contract: Mapping[str, object], arm_id: str) -> dict[str, Any]:
@@ -182,6 +361,7 @@ def f008_tail_identity(
     role_pool: Mapping[str, object],
     preflight_receipt: Mapping[str, object],
     source_receipt: Mapping[str, object],
+    runtime_receipt_sha256: str,
 ) -> dict[str, Any]:
     """Build the complete immutable identity for one F008 tail checkpoint."""
     config = _f008_config(f008_config_or_contract)
@@ -205,6 +385,7 @@ def f008_tail_identity(
         ("shared-head checkpoint", shared_head_checkpoint_sha256),
         ("known F005 tail plan", known_tail_plan_sha256),
         ("unknown exposure plan", unknown_plan_sha256),
+        ("runtime receipt", runtime_receipt_sha256),
     ):
         _sha256(value, label)
     _require(isinstance(role_pool, Mapping) and role_pool.get("outer_fold") == outer_fold,
@@ -230,6 +411,7 @@ def f008_tail_identity(
         "unknown_sampling_seed": config["seed"],
         "preflight_receipt_sha256": preflight["receipt_sha256"],
         "energy_margin_plan_sha256": margin["plan_sha256"],
+        "runtime_receipt_sha256": runtime_receipt_sha256,
         "objective": (
             "mean_short_long_aam_plus_energy_separation_oe"
             if expected_arm["id"] == "energy_005"
@@ -251,8 +433,10 @@ def f008_tail_checkpoint_metadata(
     _require(type(completed_steps) is int and head_steps <= completed_steps <= total,
              "F008 tail checkpoint step is outside the F005 tail range")
     _require(identity.get("embedding_dimension") == ADVANCED_DIMENSION
-             and identity.get("oe_full_batch_views") == 64,
+             and identity.get("oe_full_batch_views") == 64
+             and isinstance(identity.get("runtime_receipt_sha256"), str),
              "F008 checkpoint identity is malformed")
+    _sha256(identity["runtime_receipt_sha256"], "checkpoint runtime receipt")
     body = {
         "format_version": 1,
         "checkpoint_schema": F008_TAIL_CHECKPOINT_SCHEMA,
@@ -274,6 +458,7 @@ def f008_tail_checkpoint_metadata(
         "unknown_sampling_seed": identity["unknown_sampling_seed"],
         "preflight_receipt_sha256": identity["preflight_receipt_sha256"],
         "energy_margin_plan_sha256": identity["energy_margin_plan_sha256"],
+        "runtime_receipt_sha256": identity["runtime_receipt_sha256"],
         "objective": identity["objective"],
         "oe_full_batch_views": identity["oe_full_batch_views"],
         "embedding_dimension": ADVANCED_DIMENSION,
@@ -661,6 +846,7 @@ def _probe_receipt(identity: Mapping[str, object], *, step: int, encoder, head,
         "schema_version": F008_GRADIENT_PROBE_SCHEMA,
         "arm_signature": identity["signature"],
         "outer_fold": identity["outer_fold"],
+        "runtime_receipt_sha256": identity["runtime_receipt_sha256"],
         "probe_step": step,
         "optimizer_steps_persisted": 0,
         "source_f005_optimizer_and_rng_restored_before_probe": True,
@@ -689,6 +875,7 @@ def _read_gradient_probe(path: Path, identity: Mapping[str, object]) -> dict[str
              and value.get("probe_sha256") == _sha(body)
              and value.get("arm_signature") == identity["signature"]
              and value.get("outer_fold") == identity["outer_fold"]
+             and value.get("runtime_receipt_sha256") == identity["runtime_receipt_sha256"]
              and value.get("optimizer_steps_persisted") == 0
              and value.get("source_f005_optimizer_and_rng_restored_before_probe") is True
              and value.get("unknown_aam_target_assigned") is False
@@ -720,15 +907,38 @@ def _write_new_json(path: Path, value: Mapping[str, object]) -> None:
             partial.unlink()
 
 
+def _scalar_step_event(step: int, metrics: Mapping[str, object]) -> dict[str, float | int | str]:
+    """Return the JSON-safe scalar event exposed to an optional live callback."""
+    _require(type(step) is int and step > 0 and isinstance(metrics, Mapping),
+             "F008 step callback event is malformed")
+    event: dict[str, float | int | str] = {"step": step, "phase": "tail"}
+    for key, value in metrics.items():
+        _require(isinstance(key, str) and key.startswith("fit/"),
+                 "F008 step callback may expose only fit metrics")
+        _require(isinstance(value, Real) and not isinstance(value, bool)
+                 and math.isfinite(float(value)),
+                 "F008 step callback metric must be a finite scalar")
+        event[key] = float(value)
+    return event
+
+
 def _run_tail_updates(
     f005_contract: Mapping[str, object], root: Path, outer_fold: int, arm: Mapping[str, object],
     pools: Mapping[str, object], encoder, head, optimizer, *, energy_margin_config: Mapping[str, object],
     energy_margin_plan: Mapping[str, object], start_step: int, stop_step: int,
     unknown_sampling_seed: int, history_path: Path, save_checkpoint,
+    on_step: Callable[[dict[str, float | int | str]], None] | None = None,
 ) -> dict[str, Any]:
-    """Run F008's 500 recovery-checkpointed tail updates without tracking side effects."""
+    """Run F008's 500-step tail with optional scalar-only live callbacks.
+
+    The worker itself has no tracker dependency.  ``on_step`` is called only
+    after the matching JSONL event has been appended, so a launcher can emit
+    live MLflow metrics without letting MLflow become part of the training
+    implementation or checkpoint format.
+    """
     import torch
 
+    _require(on_step is None or callable(on_step), "F008 on_step must be callable")
     fit = f005_contract["config"]["fit"]
     cache = _WaveformCache(fit["waveform_cache_max_bytes"])
     io_stats: dict[str, float | int] = {"decode_seconds": 0.0, "decode_misses": 0, "cache_hits": 0}
@@ -782,12 +992,16 @@ def _run_tail_updates(
             )
         checkpoint_due = ((step + 1) % fit["checkpoint_every_steps"] == 0
                           or step + 1 == stop_step)
+        event = _scalar_step_event(step + 1, metrics)
         with Path(history_path).open("a", encoding="utf-8", newline="\n") as handle:
-            handle.write(json.dumps({"step": step + 1, "phase": "tail", **metrics},
-                                    allow_nan=False) + "\n")
+            handle.write(json.dumps(event, allow_nan=False) + "\n")
             if checkpoint_due:
                 handle.flush()
                 os.fsync(handle.fileno())
+        if on_step is not None:
+            # A fresh dict prevents external tracking code from mutating the
+            # in-worker event used by subsequent checkpoint/report logic.
+            on_step(dict(event))
         if checkpoint_due:
             save_checkpoint(step + 1)
     return {
@@ -803,8 +1017,10 @@ def _build_identity_and_source(
     f008_config_or_contract: Mapping[str, object], f005_contract: Mapping[str, object], root: Path,
     outer_fold: int, arm_id: str, shared_head_checkpoint: Path,
     source_receipt: Mapping[str, object], preflight_receipt: Mapping[str, object],
+    *, runtime_receipt_sha256: str,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any], str, int, int, dict[str, Any]]:
     """Authenticate the one F005 fork and derive F008's immutable plans once."""
+    _sha256(runtime_receipt_sha256, "runtime receipt")
     config = _f008_config(f008_config_or_contract)
     arm = f008_arm(config, arm_id)
     f005_signature = _sha256(f005_contract.get("signature"), "F005 experiment signature")
@@ -831,14 +1047,16 @@ def _build_identity_and_source(
         shared_head_checkpoint_sha256=shared_sha, known_tail_plan_sha256=known_plan,
         unknown_plan_sha256=unknown_plan, role_pool=pools,
         preflight_receipt=preflight_receipt, source_receipt=source_receipt,
+        runtime_receipt_sha256=runtime_receipt_sha256,
     )
     return config, arm, pools, shared_payload, shared_sha, start, stop, identity
 
 
-def probe_f008_tail_gradients(
+def _probe_f008_tail_gradients_validated(
     f008_config_or_contract: Mapping[str, object], f005_contract: Mapping[str, object], root: Path,
     outer_fold: int, arm_id: str, shared_head_checkpoint: Path,
     source_receipt: Mapping[str, object], preflight_receipt: Mapping[str, object],
+    *, runtime_receipt_sha256: str,
 ) -> dict[str, Any]:
     """Run one real F008 backward pass and persist zero optimizer updates.
 
@@ -851,6 +1069,7 @@ def probe_f008_tail_gradients(
     values = _build_identity_and_source(
         f008_config_or_contract, f005_contract, root, outer_fold, arm_id,
         shared_head_checkpoint, source_receipt, preflight_receipt,
+        runtime_receipt_sha256=runtime_receipt_sha256,
     )
     config, arm, pools, shared_payload, _shared_sha, start, _stop, identity = values
     encoder, head, optimizer, _trainable, _seed = _make_components(dict(f005_contract), Path(root), outer_fold)
@@ -879,11 +1098,34 @@ def probe_f008_tail_gradients(
         torch.cuda.empty_cache()
 
 
+def probe_f008_tail_gradients(
+    f008_config_or_contract: Mapping[str, object], f005_contract: Mapping[str, object], root: Path,
+    outer_fold: int, arm_id: str, shared_head_checkpoint: Path,
+    source_receipt: Mapping[str, object], preflight_receipt: Mapping[str, object],
+    *, runtime_receipt: Mapping[str, object],
+) -> dict[str, Any]:
+    """Run one F008 backward-only update after validating its runtime receipt.
+
+    The receipt is required before the private worker imports Torch or builds a
+    model.  The returned receipt contains no parameter values and persists no
+    optimizer update.
+    """
+    runtime = validate_f008_runtime_receipt(
+        runtime_receipt, f008_config_or_contract, f005_contract,
+    )
+    return _probe_f008_tail_gradients_validated(
+        f008_config_or_contract, f005_contract, root, outer_fold, arm_id,
+        shared_head_checkpoint, source_receipt, preflight_receipt,
+        runtime_receipt_sha256=runtime["receipt_sha256"],
+    )
+
+
 def load_authenticated_f008_tail(
     f008_config_or_contract: Mapping[str, object], f005_contract: Mapping[str, object], root: Path,
     outer_fold: int, arm_id: str, shared_head_checkpoint: Path,
     source_receipt: Mapping[str, object], preflight_receipt: Mapping[str, object],
     checkpoint: Path,
+    *, runtime_receipt: Mapping[str, object],
 ) -> dict[str, Any]:
     """Build an authenticated completed F008 encoder/head for a future extractor.
 
@@ -892,11 +1134,15 @@ def load_authenticated_f008_tail(
     caller owns the returned live CUDA modules and must release them.  No cache
     or parameter values are copied outside the server by this loader.
     """
+    runtime_receipt = validate_f008_runtime_receipt(
+        runtime_receipt, f008_config_or_contract, f005_contract,
+    )
     import torch
 
     values = _build_identity_and_source(
         f008_config_or_contract, f005_contract, root, outer_fold, arm_id,
         shared_head_checkpoint, source_receipt, preflight_receipt,
+        runtime_receipt_sha256=runtime_receipt["receipt_sha256"],
     )
     config, arm, _pools, shared_payload, _shared_sha, _start, stop, identity = values
     del config, arm
@@ -931,14 +1177,24 @@ def fit_f008_tail(
     f008_config_or_contract: Mapping[str, object], f005_contract: Mapping[str, object], root: Path,
     outer_fold: int, arm_id: str, shared_head_checkpoint: Path,
     source_receipt: Mapping[str, object], preflight_receipt: Mapping[str, object], output: Path,
-    *, resume: bool = False,
+    *, runtime_receipt: Mapping[str, object], resume: bool = False,
+    on_step: Callable[[dict[str, float | int | str]], None] | None = None,
 ) -> dict[str, Any]:
-    """Train or resume one 500-step F008 OE tail from an F005 shared head."""
+    """Train/resume one F008 tail after a one-time runtime attestation.
+
+    ``on_step`` is an optional scalar-only callback for a launcher to publish
+    live metrics.  It is deliberately injected rather than importing MLflow
+    into this worker.
+    """
+    runtime_receipt_value = validate_f008_runtime_receipt(
+        runtime_receipt, f008_config_or_contract, f005_contract,
+    )
     import torch
 
     values = _build_identity_and_source(
         f008_config_or_contract, f005_contract, root, outer_fold, arm_id,
         shared_head_checkpoint, source_receipt, preflight_receipt,
+        runtime_receipt_sha256=runtime_receipt_value["receipt_sha256"],
     )
     config, arm, pools, shared_payload, shared_sha, start, stop, identity = values
     output = Path(output)
@@ -951,9 +1207,10 @@ def fit_f008_tail(
     if probe_path.exists() or probe_path.is_symlink():
         probe = _read_gradient_probe(probe_path, identity)
     else:
-        probe = probe_f008_tail_gradients(
+        probe = _probe_f008_tail_gradients_validated(
             f008_config_or_contract, f005_contract, root, outer_fold, arm_id,
             shared_head_checkpoint, source_receipt, preflight_receipt,
+            runtime_receipt_sha256=runtime_receipt_value["receipt_sha256"],
         )
         _write_new_json(probe_path, probe)
         probe = _read_gradient_probe(probe_path, identity)
@@ -994,7 +1251,7 @@ def fit_f008_tail(
             energy_margin_config=config["energy_margin"],
             energy_margin_plan=verify_preflight_receipt(preflight_receipt)["energy_margin_plan"],
             start_step=current, stop_step=stop, unknown_sampling_seed=config["seed"],
-            history_path=history, save_checkpoint=save,
+            history_path=history, save_checkpoint=save, on_step=on_step,
         )
         report = {
             "status": "complete", "stage": "open_set_oe_tail", "outer_fold": outer_fold,
@@ -1004,6 +1261,7 @@ def fit_f008_tail(
             "unknown_plan_sha256": identity["unknown_plan_sha256"],
             "preflight_receipt_sha256": identity["preflight_receipt_sha256"],
             "energy_margin_plan_sha256": identity["energy_margin_plan_sha256"],
+            "runtime_receipt_sha256": identity["runtime_receipt_sha256"],
             "shared_head_checkpoint_sha256": shared_sha,
             "fork_encoder_sha256": fork_encoder, "fork_head_sha256": fork_head,
             "initialization_seed": seed,
