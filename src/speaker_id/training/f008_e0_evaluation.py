@@ -18,7 +18,7 @@ import hashlib
 import json
 import math
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping, Sequence
 import uuid
 
@@ -41,6 +41,13 @@ from speaker_id.training.f008_scoring import (
 E0_SCREEN_ID = "E0"
 E0_ACTIVE_ARMS = ("control_f005", "energy_005")
 E0_OUTER_REPORT_SCHEMA = "f008-e0-post-screen-outer-report-v1"
+E0_RECOVERY_VERSION = "recovery_v1"
+E0_RECOVERY_SCHEMA = "f008-e0-recovery-v1"
+E0_RECOVERY_FOLD_ARTIFACT_SOURCE = {"0": "failed_e0_parent", "1": "recovery_root"}
+E0_RECOVERY_FOLD_ARTIFACT_RELATIVE = {
+    "0": "fold_0/energy_005",
+    "1": "fold_1/energy_005",
+}
 
 
 def _require(condition: bool, message: str) -> None:
@@ -57,6 +64,14 @@ def _canonical(value: object) -> bytes:
 
 def _sha(value: object) -> str:
     return hashlib.sha256(_canonical(value)).hexdigest()
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def _is_sha256(value: object) -> bool:
@@ -102,11 +117,23 @@ def _write_new_json(path: Path, value: Mapping[str, object]) -> None:
 
 def _regular_below(root: Path, relative: str, label: str) -> Path:
     base = Path(root).resolve(strict=True)
-    candidate = base / relative
+    candidate = base / PurePosixPath(relative)
     resolved = candidate.resolve(strict=True)
     _require(
         not candidate.is_symlink() and resolved.is_relative_to(base)
         and resolved.is_file() and not resolved.is_symlink(),
+        f"F008 E0 {label} path escapes its screen directory",
+    )
+    return resolved
+
+
+def _regular_directory_below(root: Path, relative: str, label: str) -> Path:
+    base = Path(root).resolve(strict=True)
+    candidate = base / PurePosixPath(relative)
+    resolved = candidate.resolve(strict=True)
+    _require(
+        not candidate.is_symlink() and resolved.is_relative_to(base)
+        and resolved.is_dir() and not resolved.is_symlink(),
         f"F008 E0 {label} path escapes its screen directory",
     )
     return resolved
@@ -121,6 +148,68 @@ def e0_active_scoring_spec(config: Mapping[str, object]) -> dict[str, object]:
         "control_arm_id": E0_ACTIVE_ARMS[0],
         "arm_tie_order": list(E0_ACTIVE_ARMS),
     })
+
+
+def _validated_recovery_declaration(screen: Mapping[str, object]) -> dict[str, object] | None:
+    """Validate the fixed recovery_v1 bridge without accepting supplied paths."""
+    recovery = screen.get("recovery")
+    if recovery is None:
+        return None
+    _require(isinstance(recovery, Mapping), "F008 E0 recovery declaration is malformed")
+    required_sha = (
+        "failed_e0_failure_sha256", "failed_e0_runtime_summary_sha256",
+        "failed_e0_runtime_receipt_sha256", "fresh_runtime_receipt_sha256",
+        "fold_0_reused_checkpoint_receipt_sha256",
+        "fold_0_reused_cache_identity_signature",
+        "fold_0_reused_cache_receipt_sha256",
+    )
+    _require(
+        recovery.get("schema_version") == E0_RECOVERY_SCHEMA
+        and recovery.get("version") == E0_RECOVERY_VERSION
+        and isinstance(recovery.get("failed_e0_directory_name"), str)
+        and bool(recovery["failed_e0_directory_name"])
+        and isinstance(recovery.get("failed_e0_parent_run_id"), str)
+        and bool(recovery["failed_e0_parent_run_id"])
+        and all(_is_sha256(recovery.get(key)) for key in required_sha)
+        and recovery.get("fresh_runtime_receipt_sha256")
+        == recovery.get("failed_e0_runtime_receipt_sha256")
+        and recovery.get("fold_artifact_source_by_outer")
+        == E0_RECOVERY_FOLD_ARTIFACT_SOURCE
+        and recovery.get("fold_artifact_relative_path_by_outer")
+        == E0_RECOVERY_FOLD_ARTIFACT_RELATIVE
+        and recovery.get("failed_root_mutated") is False
+        and recovery.get("fold_0_training_executed") is False
+        and recovery.get("fold_0_audio_extraction_executed") is False
+        and recovery.get("fold_1_training_executed") is True
+        and recovery.get("fold_1_audio_extraction_executed") is True
+        and isinstance(screen.get("recovery_tracking_run_id"), str)
+        and bool(screen["recovery_tracking_run_id"]),
+        "F008 E0 recovery declaration is not the fixed authenticated recovery_v1 bridge",
+    )
+    return dict(recovery)
+
+
+def _resolve_fold_artifact_directory(
+        e0_directory: Path, *, outer: int,
+        recovery: Mapping[str, object] | None,
+) -> Path:
+    """Resolve fixed cache/checkpoint roots for standard or recovery E0 evidence."""
+    root = Path(e0_directory).resolve(strict=True)
+    _require(root.is_dir() and not root.is_symlink(), "F008 E0 screen directory is unavailable")
+    if recovery is None:
+        return _regular_directory_below(root, f"fold_{outer}/energy_005", "energy fold directory")
+    _require(
+        root.name == E0_RECOVERY_VERSION
+        and root.parent.is_dir() and not root.parent.is_symlink()
+        and root.parent.name == recovery["failed_e0_directory_name"],
+        "F008 E0 recovery root is not attached to its immutable failed E0 parent",
+    )
+    _require(str(outer) in E0_RECOVERY_FOLD_ARTIFACT_SOURCE,
+             "F008 E0 recovery has no fixed artifact root for this fold")
+    source = E0_RECOVERY_FOLD_ARTIFACT_SOURCE[str(outer)]
+    relative = E0_RECOVERY_FOLD_ARTIFACT_RELATIVE[str(outer)]
+    base = root.parent if source == "failed_e0_parent" else root
+    return _regular_directory_below(base, relative, "recovery energy fold directory")
 
 
 def validate_completed_e0_screen(
@@ -147,6 +236,7 @@ def validate_completed_e0_screen(
         and screen.get("promotion_decision") == "forbidden_for_E0_calibration_only_screen",
         "F008 E0 screen declaration is not the required calibration-only screen",
     )
+    recovery = _validated_recovery_declaration(screen)
     folds = screen.get("folds")
     expected = list(fold_ids)
     _require(
@@ -163,9 +253,17 @@ def validate_completed_e0_screen(
                  and _is_sha256(row.get("cache_receipt_sha256"))
                  and _is_sha256(row.get("pretruth_seal_sha256")),
                  "F008 E0 fold summary lacks immutable evidence")
+        if recovery is not None:
+            _require(
+                _is_sha256(row.get("fold_report_sha256"))
+                and _is_sha256(row.get("pretruth_seal_file_sha256"))
+                and row.get("training_executed") is (outer == 1)
+                and row.get("audio_extraction_executed") is (outer == 1),
+                "F008 E0 recovery fold summary lacks its recovery-bound evidence",
+            )
         by_outer[outer] = dict(row)
     _require(set(by_outer) == set(expected), "F008 E0 screen folds differ from config")
-    return {"screen": dict(screen), "folds_by_outer": by_outer}
+    return {"screen": dict(screen), "folds_by_outer": by_outer, "recovery": recovery}
 
 
 @dataclass(frozen=True)
@@ -220,7 +318,7 @@ def _validate_fold_report(
 
 
 def _load_energy_cache_and_control(
-        *, e0_directory: Path, outer: int, f008_signature: str,
+        *, e0_directory: Path, artifact_fold_directory: Path, outer: int, f008_signature: str,
         f005_contract: Mapping[str, object], source_receipt: Mapping[str, object],
         source_root: Path, frozen_valid: np.ndarray,
         fold_summary: Mapping[str, object], frozen_receipt: Mapping[str, object],
@@ -235,21 +333,22 @@ def _load_energy_cache_and_control(
     )
 
     root = Path(e0_directory).resolve(strict=True)
-    fold_root = root / f"fold_{outer}" / "energy_005"
+    fold_root = Path(artifact_fold_directory).resolve(strict=True)
     _require(fold_root.is_dir() and not fold_root.is_symlink(),
-             "F008 E0 energy fold directory is unavailable")
-    report = _read_json(_regular_below(
-        root, f"fold_{outer}/energy_005/fold_report.json", "fold report"), "fold report",
+             "F008 E0 energy cache/checkpoint fold directory is unavailable")
+    report_path = _regular_below(
+        root, f"fold_{outer}/energy_005/fold_report.json", "fold report",
     )
+    report = _read_json(report_path, "fold report")
     _validate_fold_report(report, outer=outer, screen_fold=fold_summary,
                           f008_signature=f008_signature)
     checkpoint = validate_f008_tail_checkpoint_receipt(_read_json(
-        _regular_below(root, f"fold_{outer}/energy_005/checkpoint_receipt.json", "checkpoint receipt"),
+        _regular_below(fold_root, "checkpoint_receipt.json", "checkpoint receipt"),
         "checkpoint receipt",
     ))
-    cache_relative = f"fold_{outer}/energy_005/full_scoring/energy_005"
+    cache_relative = "full_scoring/energy_005"
     stored_identity = _read_json(
-        _regular_below(root, f"{cache_relative}/cache_identity.json", "energy cache identity"),
+        _regular_below(fold_root, f"{cache_relative}/cache_identity.json", "energy cache identity"),
         "energy cache identity",
     )
     _require(
@@ -303,6 +402,12 @@ def _load_energy_cache_and_control(
         root, f"fold_{outer}/energy_005/scoring/pretruth_e0_energy_only_seal.json",
         "pretruth policy seal",
     )
+    if "fold_report_sha256" in fold_summary:
+        _require(
+            _sha256_file(report_path) == fold_summary["fold_report_sha256"]
+            and _sha256_file(policy_path) == fold_summary["pretruth_seal_file_sha256"],
+            "F008 E0 recovery report or pretruth seal bytes changed",
+        )
     return (
         np.asarray(cache["embeddings"], dtype=np.float32),
         np.asarray(control["embeddings"], dtype=np.float32),
@@ -340,8 +445,12 @@ def rebuild_e0_pretruth_bundles(
     frozen_advanced = frozen_vectors["advanced"]
     prepared: dict[int, E0PreparedFold] = {}
     for outer in fold_ids:
+        artifact_fold_directory = _resolve_fold_artifact_directory(
+            root, outer=outer, recovery=validated_screen["recovery"],
+        )
         energy, control, binding, checkpoint, cache, policy_path, report = _load_energy_cache_and_control(
-            e0_directory=root, outer=outer, f008_signature=f008_signature,
+            e0_directory=root, artifact_fold_directory=artifact_fold_directory,
+            outer=outer, f008_signature=f008_signature,
             f005_contract=f005_contract, source_receipt=source_receipt,
             source_root=source_root, frozen_valid=frozen_valid,
             fold_summary=validated_screen["folds_by_outer"][outer],

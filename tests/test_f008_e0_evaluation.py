@@ -310,6 +310,79 @@ class F008E0OuterEvaluationTests(unittest.TestCase):
                 changed, f008_signature="a" * 64, f005_signature="b" * 64, fold_ids=[0, 1],
             )
 
+    def test_recovery_v1_resolves_fold_zero_only_from_failed_parent(self) -> None:
+        recovery = {
+            "schema_version": e0.E0_RECOVERY_SCHEMA,
+            "version": e0.E0_RECOVERY_VERSION,
+            "failed_e0_directory_name": "failed_e0",
+            "failed_e0_parent_run_id": "old-parent",
+            "failed_e0_failure_sha256": "1" * 64,
+            "failed_e0_runtime_summary_sha256": "2" * 64,
+            "failed_e0_runtime_receipt_sha256": "3" * 64,
+            "fresh_runtime_receipt_sha256": "3" * 64,
+            "fold_artifact_source_by_outer": dict(e0.E0_RECOVERY_FOLD_ARTIFACT_SOURCE),
+            "fold_artifact_relative_path_by_outer": dict(e0.E0_RECOVERY_FOLD_ARTIFACT_RELATIVE),
+            "failed_root_mutated": False,
+            "fold_0_training_executed": False,
+            "fold_0_audio_extraction_executed": False,
+            "fold_1_training_executed": True,
+            "fold_1_audio_extraction_executed": True,
+            "fold_0_reused_checkpoint_receipt_sha256": "4" * 64,
+            "fold_0_reused_cache_identity_signature": "5" * 64,
+            "fold_0_reused_cache_receipt_sha256": "6" * 64,
+        }
+        screen = {
+            "status": "complete", "f008_config_signature": "a" * 64,
+            "f005_contract_signature": "b" * 64,
+            "screen": {
+                "id": "E0", "active_arms": list(e0.E0_ACTIVE_ARMS),
+                "deferred_uniform": True, "outer_evaluation_called": False,
+                "outer_labels_used_for_selection": False,
+                "selection_or_promotion_allowed": False,
+            },
+            "recovery": recovery, "recovery_tracking_run_id": "recovery-parent",
+            "outer_evaluation_called": False,
+            "promotion_decision": "forbidden_for_E0_calibration_only_screen",
+            "folds": [
+                {
+                    "outer_fold": outer, "checkpoint_receipt_sha256": "c" * 64,
+                    "cache_receipt_sha256": "d" * 64,
+                    "pretruth_seal_sha256": "e" * 64,
+                    "pretruth_seal_file_sha256": "f" * 64,
+                    "fold_report_sha256": "0" * 64,
+                    "training_executed": outer == 1,
+                    "audio_extraction_executed": outer == 1,
+                }
+                for outer in (0, 1)
+            ],
+        }
+        checked = e0.validate_completed_e0_screen(
+            screen, f008_signature="a" * 64, f005_signature="b" * 64, fold_ids=[0, 1],
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            failed = Path(directory) / "failed_e0"
+            recovery_root = failed / e0.E0_RECOVERY_VERSION
+            (failed / "fold_0" / "energy_005").mkdir(parents=True)
+            (recovery_root / "fold_1" / "energy_005").mkdir(parents=True)
+            self.assertEqual(
+                e0._resolve_fold_artifact_directory(
+                    recovery_root, outer=0, recovery=checked["recovery"],
+                ),
+                (failed / "fold_0" / "energy_005").resolve(),
+            )
+            self.assertEqual(
+                e0._resolve_fold_artifact_directory(
+                    recovery_root, outer=1, recovery=checked["recovery"],
+                ),
+                (recovery_root / "fold_1" / "energy_005").resolve(),
+            )
+        altered = copy.deepcopy(screen)
+        altered["recovery"]["fold_artifact_relative_path_by_outer"]["0"] = "../other"
+        with self.assertRaises(ValueError):
+            e0.validate_completed_e0_screen(
+                altered, f008_signature="a" * 64, f005_signature="b" * 64, fold_ids=[0, 1],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
