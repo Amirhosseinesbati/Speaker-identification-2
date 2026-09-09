@@ -96,7 +96,7 @@ def validate_f008_config(config: Mapping[str, object]) -> None:
 def _validate_source(value: object) -> None:
     _require(isinstance(value, Mapping) and set(value) == {
         "run_dir", "parent_run_id", "config_path", "config_sha256", "experiment_signature",
-        "resolved_config_sha256",
+        "resolved_config_sha256", "source_snapshot_relative_path", "source_snapshot_sha256",
         "required_selected_arm_by_outer_fold", "arm_selection_seals", "reuse_shared_head",
         "reuse_control_tail_as_comparator_only",
     }, "F008 F005 source binding changed")
@@ -104,6 +104,7 @@ def _validate_source(value: object) -> None:
              and value["parent_run_id"] == "5ad78a9dba1f4ab4a32783e445d91681"
              and value["config_path"] == "configs/train/campp_f005_consistency.json"
              and value["experiment_signature"] == "1dff7bf656fa9ba12afb9c8b3c3523a489609a402ff1f6e91d484ac1f592b3ab"
+             and value["source_snapshot_relative_path"] == "tracking/parent/artifacts/source_snapshot.zip"
              and value["required_selected_arm_by_outer_fold"] == {"0": "control", "1": "control"}
              and value["reuse_shared_head"] is True
              and value["reuse_control_tail_as_comparator_only"] is True,
@@ -111,6 +112,7 @@ def _validate_source(value: object) -> None:
     _sha256(value["config_sha256"], "F005 config checksum")
     _sha256(value["experiment_signature"], "F005 experiment signature")
     _sha256(value["resolved_config_sha256"], "F005 resolved config checksum")
+    _sha256(value["source_snapshot_sha256"], "F005 source snapshot checksum")
     seals = value["arm_selection_seals"]
     _require(isinstance(seals, Mapping) and set(seals) == {"0", "1"},
              "F008 F005 arm-selection seals changed")

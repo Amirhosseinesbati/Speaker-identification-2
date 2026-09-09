@@ -5,8 +5,10 @@ from copy import deepcopy
 import hashlib
 import json
 from pathlib import Path
+import stat
 import tempfile
 import unittest
+import zipfile
 
 from speaker_id.training.f008_preflight import (
     F008_PREFLIGHT_SCHEMA,
@@ -150,9 +152,17 @@ class F008PreflightReceiptTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "selected arm differs"):
                 validate_f005_control_selection(root, source)
 
-    def test_source_contract_bridge_allows_only_additive_global_src_change(self) -> None:
+    def test_source_contract_bridge_requires_snapshot_proof_of_additive_source_change(self) -> None:
         from speaker_id.training.f008_protocol import canonical
 
+        old_bytes = b"historic-f005-worker-bytes\n"
+        added_bytes = b"post-f005-f008-module-bytes\n"
+        source_path = "src/speaker_id/training/f005_worker.py"
+        added_path = "src/speaker_id/training/f008_preflight.py"
+        historic_tree = [{
+            "path": source_path,
+            "sha256": hashlib.sha256(old_bytes).hexdigest(),
+        }]
         source_identity = {
             "schema_version": 1, "experiment": {"experiment_code": "F005"},
             "config_sha256": "1" * 64, "readiness_signature": "2" * 64,
@@ -160,34 +170,75 @@ class F008PreflightReceiptTests(unittest.TestCase):
             "advanced_model_config_sha256": "4" * 64, "advanced_weights_sha256": "5" * 64,
             "trainable_embedding_dimension": 192, "frozen_public_embedding_dimension": 512,
             "code_hashes": {"src/speaker_id/training/f005_worker.py": "6" * 64},
-            "src_tree_file_count": 108, "src_tree_sha256": "7" * 64,
+            "src_tree_file_count": len(historic_tree),
+            "src_tree_sha256": hashlib.sha256(canonical(historic_tree)).hexdigest(),
         }
         source_signature = hashlib.sha256(canonical(source_identity)).hexdigest()
         current_identity = deepcopy(source_identity)
-        current_identity["src_tree_file_count"] = 109
-        current_identity["src_tree_sha256"] = "8" * 64
-        current = {"identity": current_identity, "signature": "9" * 64, "config": {}}
+        current_tree = sorted(historic_tree + [{
+            "path": added_path,
+            "sha256": hashlib.sha256(added_bytes).hexdigest(),
+        }], key=lambda entry: entry["path"])
+        current_identity["readiness_signature"] = "7" * 64
+        current_identity["src_tree_file_count"] = len(current_tree)
+        current_identity["src_tree_sha256"] = hashlib.sha256(canonical(current_tree)).hexdigest()
+        current = {
+            "identity": current_identity, "signature": "9" * 64, "config": {},
+            "readiness": {
+                "signature": current_identity["readiness_signature"],
+                "input_hashes": current_identity["readiness_input_hashes"],
+            },
+        }
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            project = root / "project"
+            source_root = root / "source"
+            worker = project / source_path
+            additional = project / added_path
+            worker.parent.mkdir(parents=True)
+            additional.parent.mkdir(parents=True, exist_ok=True)
+            worker.write_bytes(old_bytes)
+            additional.write_bytes(added_bytes)
+
+            archive = source_root / "tracking/parent/artifacts/source_snapshot.zip"
+            archive.parent.mkdir(parents=True)
+            with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as output:
+                info = zipfile.ZipInfo(source_path)
+                info.create_system = 3
+                info.external_attr = (stat.S_IFREG | 0o644) << 16
+                output.writestr(info, old_bytes)
             resolved = {"experiment_signature": source_signature, "identity": source_identity}
-            resolved_path = root / "resolved_config.json"
+            resolved_path = source_root / "resolved_config.json"
             resolved_path.write_text(json.dumps(resolved), encoding="utf-8")
             source = {
-                "run_dir": str(root), "parent_run_id": "parent", "config_path": "f005.json",
+                "run_dir": str(source_root), "parent_run_id": "parent", "config_path": "f005.json",
                 "config_sha256": "a" * 64, "experiment_signature": source_signature,
                 "resolved_config_sha256": hashlib.sha256(resolved_path.read_bytes()).hexdigest(),
+                "source_snapshot_relative_path": "tracking/parent/artifacts/source_snapshot.zip",
+                "source_snapshot_sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
                 "required_selected_arm_by_outer_fold": {"0": "control", "1": "control"},
                 "arm_selection_seals": {}, "reuse_shared_head": True,
                 "reuse_control_tail_as_comparator_only": True,
             }
-            adjusted, bridge = authenticated_f005_source_contract(current, root, source)
+            adjusted, bridge = authenticated_f005_source_contract(
+                current, source_root, project, source,
+            )
             self.assertEqual(adjusted["signature"], source_signature)
             self.assertEqual(adjusted["identity"], source_identity)
+            self.assertEqual(adjusted["readiness"]["signature"], source_identity["readiness_signature"])
+            self.assertEqual(adjusted["readiness"]["input_hashes"],
+                             source_identity["readiness_input_hashes"])
             self.assertTrue(bridge["f005_relevant_code_hashes_exact"])
+            self.assertEqual(bridge["source_snapshot"]["current_only_source_files"], [
+                entry for entry in current_tree if entry["path"] == added_path
+            ])
             broken = deepcopy(current)
             broken["identity"]["code_hashes"]["src/speaker_id/training/f005_worker.py"] = "b" * 64
             with self.assertRaisesRegex(ValueError, "relevant-code identity changed"):
-                authenticated_f005_source_contract(broken, root, source)
+                authenticated_f005_source_contract(broken, source_root, project, source)
+            worker.write_bytes(b"modified-historic-f005-worker-bytes\n")
+            with self.assertRaisesRegex(ValueError, "reconstructed current source tree"):
+                authenticated_f005_source_contract(current, source_root, project, source)
 
 
 if __name__ == "__main__":

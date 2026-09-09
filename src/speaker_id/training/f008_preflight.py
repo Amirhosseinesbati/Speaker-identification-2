@@ -13,8 +13,10 @@ from copy import deepcopy
 import hashlib
 import json
 import math
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+import stat
 from typing import Any
+import zipfile
 
 import numpy as np
 
@@ -61,6 +63,132 @@ def _file_sha256(path: Path) -> str:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _relative_posix_path(value: object, label: str) -> PurePosixPath:
+    """Parse a repository-relative POSIX path without accepting traversal."""
+    _require(isinstance(value, str) and value and "\\" not in value and ":" not in value,
+             f"F008 {label} path is invalid")
+    parsed = PurePosixPath(value)
+    _require(not parsed.is_absolute() and parsed.as_posix() == value
+             and ".." not in parsed.parts and "." not in parsed.parts,
+             f"F008 {label} path escapes its root")
+    return parsed
+
+
+def _regular_file_below(root: Path, relative: PurePosixPath, label: str) -> Path:
+    """Return a non-symlink regular file whose ancestors remain under ``root``."""
+    root = Path(root)
+    _require(root.is_dir() and not root.is_symlink(), f"F008 {label} root is invalid")
+    candidate = root.joinpath(*relative.parts)
+    _require(candidate.is_relative_to(root) and candidate.is_file() and not candidate.is_symlink(),
+             f"F008 {label} must be a regular file")
+    ancestor = candidate.parent
+    while ancestor != root:
+        _require(ancestor.is_dir() and not ancestor.is_symlink(),
+                 f"F008 {label} parent may not be a symlink")
+        ancestor = ancestor.parent
+    return candidate
+
+
+def _current_source_tree(project_root: Path) -> list[dict[str, str]]:
+    """Reconstruct the same source-tree inventory F005 bound into its identity."""
+    root = Path(project_root)
+    source = root / "src"
+    _require(root.is_dir() and not root.is_symlink()
+             and source.is_dir() and not source.is_symlink(),
+             "F008 current project source tree is unavailable")
+    entries = list(source.rglob("*"))
+    _require(not any(path.is_symlink() for path in entries),
+             "F008 current project source tree may not contain symlinks")
+    files = sorted(
+        path for path in entries
+        if path.is_file()
+        and path.suffix.lower() not in {".pyc", ".pyo"}
+        and not any(part in {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"}
+                    for part in path.relative_to(source).parts)
+    )
+    _require(files, "F008 current project source tree is empty")
+    return [
+        {"path": path.relative_to(root).as_posix(), "sha256": _file_sha256(path)}
+        for path in files
+    ]
+
+
+def _verify_source_snapshot(*, source_root: Path, project_root: Path,
+                            source_config: Mapping[str, object],
+                            source_identity: Mapping[str, object],
+                            current_identity: Mapping[str, object]) -> dict[str, object]:
+    """Prove every historic F005 source byte persists before bridging its digest.
+
+    The F005 snapshot is itself pinned by the F008 config.  It is stronger
+    evidence than the dedicated F005 code hashes because it covers every
+    historic ``src`` file, while allowing later, additive F007/F008 modules.
+    No archive content is extracted.
+    """
+    relative = _relative_posix_path(source_config.get("source_snapshot_relative_path"),
+                                    "F005 source snapshot")
+    _require(relative.as_posix() == "tracking/parent/artifacts/source_snapshot.zip",
+             "F008 F005 source snapshot location changed")
+    snapshot = _regular_file_below(Path(source_root), relative, "F005 source snapshot")
+    expected_snapshot_sha = _sha256(source_config.get("source_snapshot_sha256"),
+                                    "F005 source snapshot checksum")
+    _require(_file_sha256(snapshot) == expected_snapshot_sha,
+             "F008 F005 source snapshot bytes changed")
+
+    try:
+        with zipfile.ZipFile(snapshot) as archive:
+            infos = archive.infolist()
+            _require(infos and not any(info.is_dir()
+                                       or stat.S_ISLNK(info.external_attr >> 16)
+                                       for info in infos),
+                     "F008 F005 source snapshot has invalid entries")
+            names = [info.filename for info in infos]
+            _require(len(names) == len(set(names)),
+                     "F008 F005 source snapshot has duplicate entries")
+            parsed = [(_relative_posix_path(name, "F005 source snapshot entry"), info)
+                      for name, info in zip(names, infos)]
+            _require(all(path.parts and path.parts[0] == "src" for path, _ in parsed),
+                     "F008 F005 source snapshot contains a non-source entry")
+            parsed.sort(key=lambda item: item[0].as_posix())
+            historic_tree: list[dict[str, str]] = []
+            historic_hashes: dict[str, str] = {}
+            for path, info in parsed:
+                digest = hashlib.sha256()
+                with archive.open(info, "r") as stream:
+                    for block in iter(lambda: stream.read(1024 * 1024), b""):
+                        digest.update(block)
+                name, member_sha = path.as_posix(), digest.hexdigest()
+                historic_tree.append({"path": name, "sha256": member_sha})
+                historic_hashes[name] = member_sha
+    except (OSError, zipfile.BadZipFile) as error:
+        raise ValueError("F008 F005 source snapshot is not a readable ZIP") from error
+
+    _require(
+        len(historic_tree) == source_identity.get("src_tree_file_count")
+        and _sha(historic_tree) == source_identity.get("src_tree_sha256"),
+        "F008 F005 source snapshot does not reconstruct its historic source tree",
+    )
+    current_tree = _current_source_tree(project_root)
+    _require(
+        len(current_tree) == current_identity.get("src_tree_file_count")
+        and _sha(current_tree) == current_identity.get("src_tree_sha256"),
+        "F008 reconstructed current source tree differs from its contract",
+    )
+    current_hashes = {entry["path"]: entry["sha256"] for entry in current_tree}
+    _require(set(historic_hashes).issubset(current_hashes)
+             and all(current_hashes[name] == digest for name, digest in historic_hashes.items()),
+             "F008 current source bytes differ from the authenticated F005 snapshot")
+    current_only = [entry for entry in current_tree if entry["path"] not in historic_hashes]
+    return {
+        "relative_path": relative.as_posix(),
+        "sha256": expected_snapshot_sha,
+        "historic_file_count": len(historic_tree),
+        "historic_src_tree_sha256": _sha(historic_tree),
+        "historic_files_byte_identical_in_current_src": True,
+        "current_only_source_file_count": len(current_only),
+        "current_only_source_files": current_only,
+    }
 
 
 def validate_f005_control_selection(source_run_directory: Path,
@@ -117,19 +245,20 @@ def validate_f005_control_selection(source_run_directory: Path,
 
 
 def authenticated_f005_source_contract(current_contract: Mapping[str, object],
-                                      source_run_directory: Path,
+                                      source_run_directory: Path, project_root: Path,
                                       source_config: Mapping[str, object]) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Recover F005's original contract signature without trusting current ``src`` hash.
+    """Recover F005's historic contract only after byte-level source verification.
 
     F005 included a hash of every file under ``src`` in its contract identity.
     Adding F008 modules therefore changes a freshly reconstructed F005
     signature even though the F005 data, configuration, and every F005-relevant
     code file remain byte-identical.  The original, pinned F005
     ``resolved_config.json`` supplies its exact historical identity.  This
-    bridge accepts it only after verifying its file SHA, self-signature, all
-    data/model fields, and all dedicated F005 code hashes against the current
-    contract.  The broad source-tree delta is recorded but never used to bless
-    a changed F005 implementation.
+    bridge accepts it only after verifying the pinned source snapshot against
+    every current historic source file, then verifying its file SHA,
+    self-signature, all data/model fields, and all dedicated F005 code hashes.
+    Thus a changed historic F005 implementation is never accepted merely
+    because a global tree digest has changed.
     """
     _require(isinstance(current_contract, Mapping) and isinstance(source_config, Mapping),
              "F008 F005 source-contract inputs are invalid")
@@ -138,7 +267,8 @@ def authenticated_f005_source_contract(current_contract: Mapping[str, object],
              "F008 F005 source run is unavailable")
     required_source = {
         "run_dir", "parent_run_id", "config_path", "config_sha256", "experiment_signature",
-        "resolved_config_sha256", "required_selected_arm_by_outer_fold", "arm_selection_seals",
+        "resolved_config_sha256", "source_snapshot_relative_path", "source_snapshot_sha256",
+        "required_selected_arm_by_outer_fold", "arm_selection_seals",
         "reuse_shared_head", "reuse_control_tail_as_comparator_only",
     }
     _require(set(source_config) == required_source
@@ -161,24 +291,47 @@ def authenticated_f005_source_contract(current_contract: Mapping[str, object],
              "F008 F005 resolved identity does not match its signature")
     current_identity = current_contract.get("identity")
     _require(isinstance(current_identity, Mapping), "F008 current F005 identity is missing")
+    current_readiness = current_contract.get("readiness")
+    _require(isinstance(current_readiness, Mapping)
+             and current_readiness.get("signature") == current_identity.get("readiness_signature")
+             and current_readiness.get("input_hashes") == current_identity.get("readiness_input_hashes"),
+             "F008 current F005 readiness identity is inconsistent")
     unchanged_fields = {
-        "schema_version", "experiment", "config_sha256", "readiness_signature",
+        "schema_version", "experiment", "config_sha256",
         "readiness_input_hashes", "advanced_model_config_sha256", "advanced_weights_sha256",
         "trainable_embedding_dimension", "frozen_public_embedding_dimension", "code_hashes",
     }
+    allowed_difference_fields = {
+        "readiness_signature", "src_tree_file_count", "src_tree_sha256",
+    }
+    _require(set(source_identity) == set(current_identity),
+             "F008 F005 source identity schema changed")
+    observed_difference_fields = {
+        key for key in source_identity if source_identity.get(key) != current_identity.get(key)
+    }
     _require(set(source_identity) == set(current_identity)
-             and all(source_identity.get(key) == current_identity.get(key) for key in unchanged_fields),
+             and all(source_identity.get(key) == current_identity.get(key) for key in unchanged_fields)
+             and observed_difference_fields == allowed_difference_fields,
              "F008 F005 data/model/relevant-code identity changed")
     _require(source_identity["src_tree_sha256"] != current_identity["src_tree_sha256"]
              and type(source_identity["src_tree_file_count"]) is int
              and type(current_identity["src_tree_file_count"]) is int
              and current_identity["src_tree_file_count"] > source_identity["src_tree_file_count"],
              "F008 source-tree bridge requires additive F008-only source change")
+    snapshot = _verify_source_snapshot(
+        source_root=root, project_root=Path(project_root), source_config=source_config,
+        source_identity=source_identity, current_identity=current_identity,
+    )
+    _require(snapshot["current_only_source_file_count"]
+             == current_identity["src_tree_file_count"] - source_identity["src_tree_file_count"],
+             "F008 source-tree bridge found an unaccounted source delta")
     adjusted = deepcopy(dict(current_contract))
     adjusted["identity"] = deepcopy(source_identity)
     adjusted["signature"] = expected_signature
+    adjusted["readiness"] = deepcopy(dict(current_readiness))
+    adjusted["readiness"]["signature"] = source_identity["readiness_signature"]
     bridge = {
-        "schema_version": "f008-f005-source-contract-bridge-v1",
+        "schema_version": "f008-f005-source-contract-bridge-v2",
         "source_f005_signature": expected_signature,
         "source_resolved_config_sha256": source_config["resolved_config_sha256"],
         "current_reconstructed_f005_signature": current_contract.get("signature"),
@@ -190,9 +343,13 @@ def authenticated_f005_source_contract(current_contract: Mapping[str, object],
             "file_count": current_identity["src_tree_file_count"],
             "sha256": current_identity["src_tree_sha256"],
         },
+        "source_snapshot": snapshot,
         "unchanged_identity_fields": sorted(unchanged_fields),
+        "allowed_identity_difference_fields": sorted(allowed_difference_fields),
+        "observed_identity_difference_fields": sorted(observed_difference_fields),
+        "readiness_signature_bridged_from_authenticated_historic_snapshot": True,
         "f005_relevant_code_hashes_exact": True,
-        "bridge_reason": "additive_f008_modules_changed_only_the_global_f005_src_tree_digest",
+        "bridge_reason": "only_additive_new_src_files_changed_the_global_f005_source_and_readiness_digests",
     }
     return adjusted, {**bridge, "bridge_sha256": _sha(bridge)}
 

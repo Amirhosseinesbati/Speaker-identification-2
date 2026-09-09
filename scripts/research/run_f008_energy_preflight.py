@@ -112,7 +112,7 @@ def main() -> None:
                                                verify_sources=False)
     source_root = Path(config["source_f005"]["run_dir"])
     f005_contract, source_contract_bridge = authenticated_f005_source_contract(
-        current_f005_contract, source_root, config["source_f005"],
+        current_f005_contract, source_root, ROOT, config["source_f005"],
     )
     source_receipt = load_f005_source_receipt(source_root)
     _require(source_receipt["experiment_state"]["experiment_signature"] == f005_contract["signature"],
