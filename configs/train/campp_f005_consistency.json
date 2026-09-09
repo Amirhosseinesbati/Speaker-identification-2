@@ -1,0 +1,196 @@
+{
+  "schema_version": 1,
+  "experiment_code": "F005",
+  "run_name": "F005-campp-advanced-paired-long-short-consistency",
+  "hypothesis": "A paired short/long curriculum can improve the 192-dimensional advanced CAM++ endpoint while the 512-dimensional public endpoint stays frozen. Control and every treatment start from the same pinned weights and classifier initialization and consume the same deterministic speaker, file and nested-crop plan. Every arm trains once on all permitted known encoder-fit rows. Only original disjoint known calibration queries select among the control and three treatment coefficients; unknown calibration rows are hidden until that arm choice is sealed, then fit the open-set policy. Original outer labels remain unread until frozen, fresh-control and selected-candidate heldout-reference policies are sealed. Historical C002b remains an immutable best-score comparator, not a same-protocol reproduction claim.",
+  "readiness_config": "configs/train/campp_coverage_c002.json",
+  "advanced_model_config": "configs/model/campp_advanced.json",
+  "output_root": "artifacts/training/f005_consistency",
+  "seed": 20260909,
+  "fold_ids": [0, 1],
+  "expected_source_files": 4529,
+  "known_classes": 446,
+  "evaluation_classes": 447,
+  "device": "cuda",
+  "cpu_threads": 4,
+  "tracking_required": true,
+  "execution": {
+    "gpu_name_contains": "RTX 3090",
+    "tensor_dtype": "float32",
+    "no_cpu_fallback": true,
+    "deterministic_algorithms": "enforce_error",
+    "cublas_workspace_config": ":4096:8",
+    "thread_environment": {
+      "OPENBLAS_NUM_THREADS": "4",
+      "OMP_NUM_THREADS": "4",
+      "MKL_NUM_THREADS": "4"
+    }
+  },
+  "source_c002b": {
+    "run_dir": "/workspace/Speaker-identification-2-c002/artifacts/training/cuda_gain_c002/C002_20260908T230219Z_479a211696d64a9495854f29006f72f7",
+    "parent_run_id": "37589a011a8c4f9aa0c5de0936ac7e46",
+    "child_run_id": "14a0f144b27a46e7a36e3fc3b2ce24c4",
+    "recipe": "C002b",
+    "recipe_identity": "C002b_fresh_cuda_identity",
+    "git_commit": "adf820c253c985364ccc36b24d2943508a661fc4",
+    "artifacts": {
+      "experiment_report.json": "9fa9e223a099e946bd41f68a4ea8f115b13189abe49c1a5ca11491653304c096",
+      "paired_execution_report.json": "052578058fe6f2d6c21f2a06006072455fda97adff304fbc3ae7ad10b5267af2",
+      "identity_cache_manifest.json": "7e9a9906f4708ccdea20851e31c5db6ef92f7b454e0d21539c8016ac3a0ca31a",
+      "identity_cache_identity.json": "18b5df7f2e222f11762eed343e96ddbf1b92ea88c2b0981d2f56923f747018b1",
+      "frozen_inner_choices.json": "af8815572a739d84f4e58999b947cfeeaf3c85801d80682a0ce5d3a7ae35a38c",
+      "C002b/experiment_report.json": "01e403a65cf01d3bd8d267706174383c77b53a92317773f0d24f49f7a5628d39",
+      "C002b/oof_predictions.csv": "80eb46d160d042674b450ac7070e4396889f3644ee0de1ab4e8bf5f591ecc3a6",
+      "C002b/fold_0/outer_probabilities.npz": "bdb53df3792e9305b9a9eac6dd1b0f335a597b26b96a61ccd90ae5760685600a",
+      "C002b/fold_1/outer_probabilities.npz": "d08a211d42df193af367019859ccbd8792a8d41f079a576a0591006e069fcfdc"
+    },
+    "read_only": true
+  },
+  "views": {
+    "algorithm": "nested_real_waveform_crops_v1",
+    "sample_rate": 16000,
+    "short_seconds": 3.0,
+    "long_seconds": 8.0,
+    "pad_after_crop": true,
+    "same_plan_for_all_arms": true
+  },
+  "fit": {
+    "epochs": 5,
+    "steps_per_epoch": 100,
+    "batch_pairs": 32,
+    "microbatch_pairs": 4,
+    "waveform_cache_max_bytes": 1073741824,
+    "encoder_lr": 0.00001,
+    "head_lr": 0.001,
+    "weight_decay": 0.0001,
+    "margin": 0.2,
+    "scale": 30.0,
+    "freeze_batchnorm": true,
+    "trainable_prefixes": [
+      "xvector.block3",
+      "xvector.transit3",
+      "xvector.out_nonlinear",
+      "xvector.dense"
+    ],
+    "gradient_clip_norm": 5.0,
+    "mixed_precision": false,
+    "checkpoint_every_steps": 100,
+    "epoch_selection": "fixed_steps_no_outer_selection",
+    "augmentation": "none_paired_nested_views",
+    "classification": "mean_short_long_aam",
+    "consistency_phase": "tail_only",
+    "consistency_ramp_tail_steps": 100,
+    "raw_h_definition": "final_campp_192d_output_before_l2_normalization",
+    "long_consistency_target": "dynamic_same_step_stop_gradient",
+    "long_aam_updates_encoder": true,
+    "shared_head_stage": "run_once_per_outer_then_fork_byte_identical_checkpoint_to_all_four_tails",
+    "adaptation_schedule": {
+      "scheme": "head_warmup_tail_v1",
+      "head_only_steps": 600,
+      "margin_ramp_tail_steps": 100,
+      "encoder_lr_warmup_tail_steps": 50,
+      "head_lr_warmup_start_factor": 0.1
+    }
+  },
+  "arms": [
+    {"id": "control", "kind": "dual_aam_control", "cosine_gamma": 0.0, "raw_h_mse_lambda": 0.0},
+    {"id": "treatment_mse0", "kind": "dual_aam_consistency", "cosine_gamma": 0.5, "raw_h_mse_lambda": 0.0},
+    {"id": "treatment_mse01", "kind": "dual_aam_consistency", "cosine_gamma": 0.5, "raw_h_mse_lambda": 0.1},
+    {"id": "treatment_mse05", "kind": "dual_aam_consistency", "cosine_gamma": 0.5, "raw_h_mse_lambda": 0.5}
+  ],
+  "arm_selection": {
+    "arm_training_scope": "all_known_encoder_fit_allowed_rows_once",
+    "query_scope": "original_disjoint_known_calibration_query_rows_only",
+    "reference_scope": "all_eligible_outer_training_known_references_with_whole_query_group_exclusion",
+    "reference_method": "max_reference",
+    "metric": "known_query_macro_f1_over_observed_labels_then_top1_accuracy",
+    "expected_observed_known_labels_by_outer_fold": {"0": 443, "1": 445},
+    "expected_absent_known_labels_by_outer_fold": {"0": 3, "1": 1},
+    "arm_tie_order": ["control", "treatment_mse0", "treatment_mse01", "treatment_mse05"],
+    "control_is_selectable": true,
+    "control_selection_conclusion": "consistency_not_supported_on_known_calibration",
+    "unknown_calibration_hidden_until_arm_sealed": true,
+    "refit_after_selection": false,
+    "outer_labels_forbidden": true
+  },
+  "deployment_selection": {
+    "scope": "defined_only_after_separate_pooled_oof_promotion_decision",
+    "per_outer_arm_selection_must_not_be_globally_pooled": true
+  },
+  "scoring": {
+    "protocol": "heldout_reference_scores_original_disjoint_roles",
+    "frozen_same_protocol_control": "frozen_public512_plus_frozen_advanced192",
+    "fresh_paired_training_control": "public512_frozen_plus_f005_control_advanced192",
+    "selected_arm": "public512_frozen_plus_f005_selected_candidate_advanced192",
+    "historical_c002b": "immutable_best_comparator_different_development_protocol",
+    "public_endpoint": "frozen_public512_identity_cache",
+    "advanced_inference": "fold_checkpoint_full_utterance_180s",
+    "reference_method": "max_reference",
+    "alphas": [0.0, 0.25, 0.5, 0.75, 1.0],
+    "alpha_tie_order": [0.0, 1.0, 0.25, 0.5, 0.75],
+    "unknown_weights": [0.0, 0.25, 0.5, 0.75, 1.0],
+    "margin_weights": [0.0, 0.5],
+    "threshold_candidates": 201,
+    "probability_temperature": 0.05,
+    "inner_query_roles": "heldout_reference_scores_calibration_indices",
+    "zero_signal_fallback": "unknown",
+    "no_outer_tuning": true,
+    "no_exact_c002b_reproduction_claim": true
+  },
+  "sealing": {
+    "before_outer_truth": [
+      "known_query_selected_arm",
+      "final_control_checkpoint_identity",
+      "final_selected_arm_checkpoint_identity",
+      "frozen_same_protocol_inner_policy",
+      "control_inner_heldout_policy",
+      "selected_arm_inner_heldout_policy"
+    ],
+    "sealed_artifacts_reloaded_from_disk": true,
+    "outer_evaluated_once": true
+  },
+  "bootstrap": {
+    "kind": "paired_whole_content_group_unstratified",
+    "mixed_label_groups_preserved": true,
+    "true_class_purity_assumed": false,
+    "seed": 20260909,
+    "replicates": 5000,
+    "lower_quantile": 0.025,
+    "upper_quantile": 0.975
+  },
+  "promotion": {
+    "goal_target_oof_macro_f1": 0.965,
+    "incumbent_promotion_is_distinct_from_goal_completion": true,
+    "minimum_treatment_delta_vs_fresh_control": 0.003,
+    "minimum_selected_delta_vs_c002b": 0.003,
+    "minimum_control_delta_vs_c002b_when_selected": 0.003,
+    "minimum_accuracy_delta_vs_c002b": 0.0,
+    "minimum_short_known_top1_delta_vs_c002b": 0.0,
+    "minimum_each_fold_delta_vs_control": -0.001,
+    "minimum_each_fold_delta_vs_c002b": -0.001,
+    "maximum_unknown_to_known_increase_vs_c002b": 2,
+    "maximum_known_to_other_known_increase_vs_c002b": 0,
+    "minimum_group_bootstrap_lower_bound_vs_control": -0.0005,
+    "minimum_group_bootstrap_lower_bound_vs_c002b": -0.0005,
+    "require_exact_cpu_cuda_prediction_parity": true,
+    "all_conditions_required": true,
+    "otherwise": "retain_c002b"
+  },
+  "mlflow": {
+    "experiment_id": "1",
+    "upload": [
+      "resolved_config",
+      "source_hashes",
+      "src_snapshot",
+      "scalar_metrics",
+      "reports",
+      "plan_and_seal_receipts"
+    ],
+    "forbidden": ["raw_audio", "embeddings", "model_weights", "optimizer_state", "credentials"]
+  },
+  "retention": {
+    "local_transfer": "promotion_only",
+    "server_only": ["embedding_caches", "intermediate_checkpoints", "optimizer_states", "failed_arms", "run_directory"],
+    "transfer_after_promotion": ["minimal_model_and_policy", "resolved_config", "hash_and_verification_receipt", "minimal_offline_leaderboard_package"]
+  }
+}

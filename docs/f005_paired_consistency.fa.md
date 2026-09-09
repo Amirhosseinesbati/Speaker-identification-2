@@ -1,0 +1,83 @@
+# F005: سازگاری جفت نمای کوتاه و بلند برای CAM++ advanced
+
+F005 فقط endpoint عمومی advanced CAM++ با خروجی خام ۱۹۲بعدی و وزن
+`campplus_cn_en_common.pt` با SHA256 ثبت‌شده در config را آموزش می‌دهد. مدل عمومی
+۵۱۲بعدی در تمام مراحل ثابت می‌ماند و فقط در scoring پس از آموزش استفاده می‌شود.
+
+در هر outer fold، مرحلهٔ ۶۰۰گامی head-only دقیقاً یک‌بار اجرا می‌شود. checkpoint
+همان مرحله، با هش بایت و state یکسان، نقطهٔ شروع چهار tail پانصدگامی است: یک control
+با dual-view AAM و سه treatment با ضریب cosine ثابت ۰٫۵ و ضرایب MSE برابر صفر،
+۰٫۱ و ۰٫۵. خروجی خام `h` همان خروجی نهایی ۱۹۲بعدی CAM++ پیش از L2-normalization
+است. target نمای بلند فقط در دو loss سازگاری stop-gradient دارد؛ long-AAM همچنان
+از نمای بلند به encoder گرادیان می‌دهد.
+
+ضریب‌های consistency در ۱۰۰ گام نخست tail خطی ramp می‌شوند: در global step
+صفرمبنای ۶۰۰، scale صفر است؛ در step ۶۹۹ به یک می‌رسد و تا پایان ثابت می‌ماند.
+بنابراین ضریب مؤثر cosine و MSE برابر ضریب هر arm ضرب‌در همین scale است و control
+در تمام گام‌ها دقیقاً ضریب صفر دارد. scale و هر دو ضریب مؤثر در history و MLflow
+ثبت می‌شوند.
+
+انتخاب arm برای هر outer fold جدا انجام می‌شود. فقط queryهای known از نقش‌های
+کالیبراسیون اصلی و مستقل استفاده می‌شوند و gallery شناخته‌شده تمام referenceهای
+مجاز بخش آموزشی را با حذف کل content group همان query به کار می‌گیرد. پوشش واقعی
+known در foldهای صفر و یک به‌ترتیب ۴۴۳ و ۴۴۵ کلاس است و ۳ و ۱ کلاس غایب صریحاً
+گزارش می‌شوند. control نیز selectable است؛ برنده‌شدن آن یعنی شواهد این آزمایش از
+loss سازگاری پشتیبانی نمی‌کند. تا پیش از ذخیره و بازخوانی seal انتخاب، هیچ query یا
+cohort مربوط به unknown و هیچ outer label مصرف نمی‌شود.
+
+پس از seal، scoring کامل با `heldout_reference_scores` انجام می‌شود. سه مقایسهٔ
+اصلی عبارت‌اند از frozen public+advanced در همین پروتکل، control آموزش‌دیده در همین
+پروتکل و arm منتخب. C002b معیار تاریخی و بهترین incumbent فعلی است؛ چون پروتکل
+توسعه‌ای یکسان نیست، F005 ادعای بازتولید دقیق C002b ندارد. ارتقای treatment به حداقل
+۰٫۰۰۳ Macro-F1 بهتر از control تازه و C002b نیاز دارد. اگر control منتخب باشد، برای
+ارتقا باید حداقل ۰٫۰۰۳ از C002b بهتر باشد. شرط‌های fold، accuracy، short-known top-1،
+U→K، K→K و paired whole-content-group bootstrap نیز هم‌زمان اعمال می‌شوند. گروه
+bootstrap یک واحد تجزیه‌ناپذیر است و می‌تواند چند true label داشته باشد.
+
+## دستورات امن پیش از اجرا
+
+اعتبارسنجی فقط config و بدون دسترسی به داده، CUDA یا MLflow:
+
+```bash
+.venv/bin/python scripts/train_f005.py
+```
+
+اعتبارسنجی role/data و ساخت plan بدون آموزش:
+
+```bash
+scripts/infra/run_f005.sh --validate-data --verify-audio --verify-sources --emit-complete-plan-hashes
+```
+
+probe محدود یک backward در FP32، بدون optimizer step:
+
+```bash
+scripts/infra/run_f005.sh --execute-probe --outer-fold 0
+```
+
+launcher مقدار `CUBLAS_WORKSPACE_CONFIG=:4096:8` و سه متغیر thread را پیش از
+ورود Python تنظیم می‌کند. worker از deterministic-algorithms با حالت خطا استفاده
+می‌کند؛ warning قابل ادامه پذیرفته نمی‌شود. خود worker نیز مستقل از orchestrator،
+receipt واقعی `audio_hashes_checked=True` و تطابق `VAST_INSTANCE_ID` با readiness
+را پیش از ساخت Torch/model الزام می‌کند.
+
+پس از موفقیت probe، launcher کامل فقط با گیت صریح زیر قابل اجراست:
+
+```bash
+.venv/bin/python scripts/run_f005_experiment.py --execute
+```
+
+این launcher یک parent و ده child در MLflow می‌سازد: دو shared-head و هشت tail.
+هر دو انتخاب known-only و هر سه policy هر fold پیش از نخستین دسترسی به outer truth
+مهر و از دیسک بازخوانی می‌شوند. اجرای قطع‌شده از همان run و checkpoint معتبر ادامه
+می‌یابد و stage کامل‌شده دوباره آموزش نمی‌بیند. برای اجرای پس‌زمینه، اسکریپت
+`scripts/infra/install_f005_supervisor.sh` job را با `autostart=false` و
+`autorestart=false` ثبت می‌کند؛ شروع job همچنان یک عمل دستی و جداست.
+
+checkpoint، optimizer، embedding، صوت خام و credential هرگز به MLflow فرستاده
+نمی‌شوند. checkpointهای میانی، cacheها و armهای ناموفق روی سرور می‌مانند؛ انتقال
+محلی فقط بعد از عبور از promotion gate انجام می‌شود. گزارش parent شامل OOF و هر دو
+fold، جهت خطا، اختلاف‌ها، bootstrap گروهی، تمام gateها و وضعیت جداگانهٔ هدف ۰٫۹۶۵
+است.
+
+امتیاز ۰٫۹۶۵ معیار پایان Goal است. یک run می‌تواند با بهبود معتبر ۰٫۰۰۳ به incumbent
+جدید تبدیل شود ولی هنوز Goal را تمام نکند؛ این دو verdict باید جدا ثبت شوند.
