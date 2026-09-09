@@ -10,6 +10,7 @@ import unittest
 
 from speaker_id.training.f008_preflight import (
     F008_PREFLIGHT_SCHEMA,
+    authenticated_f005_source_contract,
     build_preflight_receipt,
     source_crop_seed,
     validate_f005_control_selection,
@@ -148,6 +149,45 @@ class F008PreflightReceiptTests(unittest.TestCase):
             (root / "experiment_state.json").write_text(json.dumps(altered), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "selected arm differs"):
                 validate_f005_control_selection(root, source)
+
+    def test_source_contract_bridge_allows_only_additive_global_src_change(self) -> None:
+        from speaker_id.training.f008_protocol import canonical
+
+        source_identity = {
+            "schema_version": 1, "experiment": {"experiment_code": "F005"},
+            "config_sha256": "1" * 64, "readiness_signature": "2" * 64,
+            "readiness_input_hashes": {"roles": "3" * 64},
+            "advanced_model_config_sha256": "4" * 64, "advanced_weights_sha256": "5" * 64,
+            "trainable_embedding_dimension": 192, "frozen_public_embedding_dimension": 512,
+            "code_hashes": {"src/speaker_id/training/f005_worker.py": "6" * 64},
+            "src_tree_file_count": 108, "src_tree_sha256": "7" * 64,
+        }
+        source_signature = hashlib.sha256(canonical(source_identity)).hexdigest()
+        current_identity = deepcopy(source_identity)
+        current_identity["src_tree_file_count"] = 109
+        current_identity["src_tree_sha256"] = "8" * 64
+        current = {"identity": current_identity, "signature": "9" * 64, "config": {}}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            resolved = {"experiment_signature": source_signature, "identity": source_identity}
+            resolved_path = root / "resolved_config.json"
+            resolved_path.write_text(json.dumps(resolved), encoding="utf-8")
+            source = {
+                "run_dir": str(root), "parent_run_id": "parent", "config_path": "f005.json",
+                "config_sha256": "a" * 64, "experiment_signature": source_signature,
+                "resolved_config_sha256": hashlib.sha256(resolved_path.read_bytes()).hexdigest(),
+                "required_selected_arm_by_outer_fold": {"0": "control", "1": "control"},
+                "arm_selection_seals": {}, "reuse_shared_head": True,
+                "reuse_control_tail_as_comparator_only": True,
+            }
+            adjusted, bridge = authenticated_f005_source_contract(current, root, source)
+            self.assertEqual(adjusted["signature"], source_signature)
+            self.assertEqual(adjusted["identity"], source_identity)
+            self.assertTrue(bridge["f005_relevant_code_hashes_exact"])
+            broken = deepcopy(current)
+            broken["identity"]["code_hashes"]["src/speaker_id/training/f005_worker.py"] = "b" * 64
+            with self.assertRaisesRegex(ValueError, "relevant-code identity changed"):
+                authenticated_f005_source_contract(broken, root, source)
 
 
 if __name__ == "__main__":

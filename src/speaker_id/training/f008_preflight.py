@@ -9,6 +9,7 @@ labels, and it writes only scalar summaries and provenance receipts.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from copy import deepcopy
 import hashlib
 import json
 import math
@@ -113,6 +114,87 @@ def validate_f005_control_selection(source_run_directory: Path,
             "seal_sha256": expected_fold["seal_sha256"],
         }
     return summaries
+
+
+def authenticated_f005_source_contract(current_contract: Mapping[str, object],
+                                      source_run_directory: Path,
+                                      source_config: Mapping[str, object]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Recover F005's original contract signature without trusting current ``src`` hash.
+
+    F005 included a hash of every file under ``src`` in its contract identity.
+    Adding F008 modules therefore changes a freshly reconstructed F005
+    signature even though the F005 data, configuration, and every F005-relevant
+    code file remain byte-identical.  The original, pinned F005
+    ``resolved_config.json`` supplies its exact historical identity.  This
+    bridge accepts it only after verifying its file SHA, self-signature, all
+    data/model fields, and all dedicated F005 code hashes against the current
+    contract.  The broad source-tree delta is recorded but never used to bless
+    a changed F005 implementation.
+    """
+    _require(isinstance(current_contract, Mapping) and isinstance(source_config, Mapping),
+             "F008 F005 source-contract inputs are invalid")
+    root = Path(source_run_directory)
+    _require(root.is_dir() and not root.is_symlink(),
+             "F008 F005 source run is unavailable")
+    required_source = {
+        "run_dir", "parent_run_id", "config_path", "config_sha256", "experiment_signature",
+        "resolved_config_sha256", "required_selected_arm_by_outer_fold", "arm_selection_seals",
+        "reuse_shared_head", "reuse_control_tail_as_comparator_only",
+    }
+    _require(set(source_config) == required_source
+             and source_config.get("run_dir") == str(root)
+             and source_config.get("reuse_shared_head") is True,
+             "F008 F005 source contract configuration changed")
+    expected_signature = _sha256(source_config.get("experiment_signature"),
+                                 "pinned F005 experiment signature")
+    resolved_path = root / "resolved_config.json"
+    _require(resolved_path.is_file() and not resolved_path.is_symlink()
+             and _file_sha256(resolved_path) == source_config.get("resolved_config_sha256"),
+             "F008 F005 resolved-config bytes changed")
+    resolved = json.loads(resolved_path.read_text(encoding="utf-8"))
+    _require(isinstance(resolved, Mapping)
+             and resolved.get("experiment_signature") == expected_signature
+             and isinstance(resolved.get("identity"), Mapping),
+             "F008 F005 resolved-config identity is invalid")
+    source_identity = dict(resolved["identity"])
+    _require(_sha(source_identity) == expected_signature,
+             "F008 F005 resolved identity does not match its signature")
+    current_identity = current_contract.get("identity")
+    _require(isinstance(current_identity, Mapping), "F008 current F005 identity is missing")
+    unchanged_fields = {
+        "schema_version", "experiment", "config_sha256", "readiness_signature",
+        "readiness_input_hashes", "advanced_model_config_sha256", "advanced_weights_sha256",
+        "trainable_embedding_dimension", "frozen_public_embedding_dimension", "code_hashes",
+    }
+    _require(set(source_identity) == set(current_identity)
+             and all(source_identity.get(key) == current_identity.get(key) for key in unchanged_fields),
+             "F008 F005 data/model/relevant-code identity changed")
+    _require(source_identity["src_tree_sha256"] != current_identity["src_tree_sha256"]
+             and type(source_identity["src_tree_file_count"]) is int
+             and type(current_identity["src_tree_file_count"]) is int
+             and current_identity["src_tree_file_count"] > source_identity["src_tree_file_count"],
+             "F008 source-tree bridge requires additive F008-only source change")
+    adjusted = deepcopy(dict(current_contract))
+    adjusted["identity"] = deepcopy(source_identity)
+    adjusted["signature"] = expected_signature
+    bridge = {
+        "schema_version": "f008-f005-source-contract-bridge-v1",
+        "source_f005_signature": expected_signature,
+        "source_resolved_config_sha256": source_config["resolved_config_sha256"],
+        "current_reconstructed_f005_signature": current_contract.get("signature"),
+        "source_src_tree": {
+            "file_count": source_identity["src_tree_file_count"],
+            "sha256": source_identity["src_tree_sha256"],
+        },
+        "current_src_tree": {
+            "file_count": current_identity["src_tree_file_count"],
+            "sha256": current_identity["src_tree_sha256"],
+        },
+        "unchanged_identity_fields": sorted(unchanged_fields),
+        "f005_relevant_code_hashes_exact": True,
+        "bridge_reason": "additive_f008_modules_changed_only_the_global_f005_src_tree_digest",
+    }
+    return adjusted, {**bridge, "bridge_sha256": _sha(bridge)}
 
 
 def source_crop_seed(role_pool_signature: str, *, outer_fold: int, stream: str,

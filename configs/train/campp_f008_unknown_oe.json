@@ -8,6 +8,8 @@
     "parent_run_id": "5ad78a9dba1f4ab4a32783e445d91681",
     "config_path": "configs/train/campp_f005_consistency.json",
     "config_sha256": "2e1f83b01054d8eb7fd9c552cba3ff26c8852794de8dcee1d2820e4441221a0d",
+    "experiment_signature": "1dff7bf656fa9ba12afb9c8b3c3523a489609a402ff1f6e91d484ac1f592b3ab",
+    "resolved_config_sha256": "de0f245e1d279212407a8878446b11e7a9b37972abca74d350d64f2d90ce65f6",
     "required_selected_arm_by_outer_fold": {"0": "control", "1": "control"},
     "arm_selection_seals": {
       "0": {"file_sha256": "fa087e98f84ca76a65cc472f58663a87456bec83b76afdb4e6429babb10b9546", "seal_sha256": "2423ab94a04cc6230d9ba6db24baa1fcdcc000224ff59884a6ec6bb7cf381021", "selected_arm": "control"},

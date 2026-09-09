@@ -98,6 +98,7 @@ def main() -> None:
     from speaker_id.training.f005_contract import load_f005_contract
     from speaker_id.training.f007_source import load_f005_source_receipt
     from speaker_id.training.f008_preflight import (
+        authenticated_f005_source_contract,
         run_source_energy_preflight,
         validate_f005_control_selection,
         verify_preflight_receipt,
@@ -107,9 +108,12 @@ def main() -> None:
 
     # This validates the already pinned metadata/data contract without a repeat
     # raw-audio hash sweep. The GPU preflight itself reads only fit-role audio.
-    f005_contract = load_f005_contract(f005_config_path, ROOT, verify_audio=False,
-                                       verify_sources=False)
+    current_f005_contract = load_f005_contract(f005_config_path, ROOT, verify_audio=False,
+                                               verify_sources=False)
     source_root = Path(config["source_f005"]["run_dir"])
+    f005_contract, source_contract_bridge = authenticated_f005_source_contract(
+        current_f005_contract, source_root, config["source_f005"],
+    )
     source_receipt = load_f005_source_receipt(source_root)
     _require(source_receipt["experiment_state"]["experiment_signature"] == f005_contract["signature"],
              "F008 source F005 experiment signature differs from its pinned config")
@@ -121,6 +125,8 @@ def main() -> None:
         "f008_config": config,
         "f008_config_signature": signature,
         "f005_contract_signature": f005_contract["signature"],
+        "current_reconstructed_f005_signature": current_f005_contract["signature"],
+        "source_contract_bridge": source_contract_bridge,
         "f005_source": _source_receipt_summary(source_receipt),
         "control_selection_seals": control_seals,
         "execution": "source_energy_preflight_only",
@@ -149,6 +155,9 @@ def main() -> None:
         tracker.flush(strict=True)
         tracker.verify_artifacts()
         tracker.verify_remote_metadata()
+        bridge_path = output / "preflight" / "f005_source_contract_bridge.json"
+        write_json(bridge_path, source_contract_bridge)
+        tracker.add_artifact(bridge_path, "preflight/f005_source_contract_bridge.json")
         receipts: dict[str, dict] = {}
         for outer in config["fold_ids"]:
             receipt = run_source_energy_preflight(
@@ -180,6 +189,7 @@ def main() -> None:
             "optimizer_steps": 0,
             "f008_config_signature": signature,
             "f005_contract_signature": f005_contract["signature"],
+            "source_contract_bridge": source_contract_bridge,
             "control_selection_seals": control_seals,
             "fold_receipts": receipts,
             "raw_audio_uploaded": False,
