@@ -51,6 +51,7 @@ SOURCE_BINDING_SCHEMA = "f008-authenticated-f005-control-embeddings-v1"
 POLICY_SCHEMA = "f008-role-safe-pretruth-policy-v1"
 ALL_POLICY_SCHEMA = "f008-all-fold-pretruth-reloads-v1"
 EVALUATION_SCHEMA = "f008-one-shot-outer-evaluation-v1"
+ACTIVE_ARM_EVALUATION_SCHEMA = "f008-one-shot-outer-active-arm-evaluation-v1"
 
 
 def _require(condition: bool, message: str) -> None:
@@ -782,21 +783,24 @@ def _validate_policy(policy: Mapping[str, object], *, outer: int,
     )
 
 
-def prepare_and_seal_pretruth(
+def _build_pretruth_bundle(
         contract: Mapping[str, object], outer: int, *,
         public_embeddings: object, frozen_advanced_embeddings: object,
         f005_control_embeddings: object, f005_source_receipt: Mapping[str, object],
         f005_control_binding: Mapping[str, object],
         f008_advanced_embeddings_by_arm: Mapping[str, object], valid: object,
-        scoring_spec: Mapping[str, object], policy_seal_path: Path,
+        scoring_spec: Mapping[str, object],
         heldout_scorer: Callable[..., dict[str, object]] = heldout_reference_scores,
         require_control_arm_same_as_source: bool = True,
-) -> dict[str, object]:
-    """Fit all inner policies and create one immutable outer-pretruth seal.
+) -> tuple[dict[str, object], dict[str, object]]:
+    """Recompute a pretruth seal/body entirely in memory.
 
-    All paths through this function replace the outer rows' ``speaker_id`` with
-    a raising sentinel before the heldout scorer is reached.  Thus any outer
-    truth access fails before a policy can be written.
+    This is deliberately the sole scoring implementation shared by the
+    original sealing stage and a later read-only outer evaluator.  It guards
+    outer rows before calling the heldout scorer, so it cannot see an outer
+    ``speaker_id``.  The returned seal is *not* written here: callers either
+    create a new immutable seal or compare it byte-for-byte with an already
+    sealed E0 policy.
     """
     spec = normalize_scoring_spec(scoring_spec)
     _validate_contract(contract, spec)
@@ -911,13 +915,7 @@ def prepare_and_seal_pretruth(
         "all_fold_seals_required_before_outer_truth": True,
     }
     seal = {**body, "seal_sha256": _sha(body)}
-    _write_new_json(Path(policy_seal_path), seal)
-    reloaded = reload_pretruth_seal(
-        Path(policy_seal_path), contract, outer, scoring_spec=spec,
-        f005_source_receipt=f005_source_receipt,
-        f005_control_binding=f005_control_binding,
-    )
-    return {
+    return seal, {
         "kind": "f008_pretruth_scoring_bundle",
         "experiment_signature": contract["signature"],
         "outer_fold": outer,
@@ -937,9 +935,90 @@ def prepare_and_seal_pretruth(
             F005_COMPARATOR: source_curves,
             **arm_curves,
         },
-        "policy_reload": reloaded,
         "outer_truth_read": False,
     }
+
+
+def prepare_and_seal_pretruth(
+        contract: Mapping[str, object], outer: int, *,
+        public_embeddings: object, frozen_advanced_embeddings: object,
+        f005_control_embeddings: object, f005_source_receipt: Mapping[str, object],
+        f005_control_binding: Mapping[str, object],
+        f008_advanced_embeddings_by_arm: Mapping[str, object], valid: object,
+        scoring_spec: Mapping[str, object], policy_seal_path: Path,
+        heldout_scorer: Callable[..., dict[str, object]] = heldout_reference_scores,
+        require_control_arm_same_as_source: bool = True,
+) -> dict[str, object]:
+    """Fit all inner policies and create one immutable outer-pretruth seal.
+
+    All paths through this function replace the outer rows' ``speaker_id`` with
+    a raising sentinel before the heldout scorer is reached.  Thus any outer
+    truth access fails before a policy can be written.
+    """
+    seal, bundle = _build_pretruth_bundle(
+        contract, outer,
+        public_embeddings=public_embeddings,
+        frozen_advanced_embeddings=frozen_advanced_embeddings,
+        f005_control_embeddings=f005_control_embeddings,
+        f005_source_receipt=f005_source_receipt,
+        f005_control_binding=f005_control_binding,
+        f008_advanced_embeddings_by_arm=f008_advanced_embeddings_by_arm,
+        valid=valid,
+        scoring_spec=scoring_spec,
+        heldout_scorer=heldout_scorer,
+        require_control_arm_same_as_source=require_control_arm_same_as_source,
+    )
+    _write_new_json(Path(policy_seal_path), seal)
+    reloaded = reload_pretruth_seal(
+        Path(policy_seal_path), contract, outer, scoring_spec=scoring_spec,
+        f005_source_receipt=f005_source_receipt,
+        f005_control_binding=f005_control_binding,
+    )
+    return {**bundle, "policy_reload": reloaded}
+
+
+def rebuild_and_validate_pretruth_bundle(
+        contract: Mapping[str, object], outer: int, *,
+        public_embeddings: object, frozen_advanced_embeddings: object,
+        f005_control_embeddings: object, f005_source_receipt: Mapping[str, object],
+        f005_control_binding: Mapping[str, object],
+        f008_advanced_embeddings_by_arm: Mapping[str, object], valid: object,
+        scoring_spec: Mapping[str, object], policy_seal_path: Path,
+        heldout_scorer: Callable[..., dict[str, object]] = heldout_reference_scores,
+        require_control_arm_same_as_source: bool = True,
+) -> dict[str, object]:
+    """Rebuild sealed E0 score bundles without outer truth and verify identity.
+
+    Unlike :func:`prepare_and_seal_pretruth`, this function creates no policy
+    file.  It recomputes every calibration choice and outer score bundle from
+    authenticated server-local caches, reloads the existing immutable policy,
+    and refuses to continue unless the complete recomputed seal is identical.
+    It is intended for the one-shot E0 post-screen evaluation stage.
+    """
+    seal, bundle = _build_pretruth_bundle(
+        contract, outer,
+        public_embeddings=public_embeddings,
+        frozen_advanced_embeddings=frozen_advanced_embeddings,
+        f005_control_embeddings=f005_control_embeddings,
+        f005_source_receipt=f005_source_receipt,
+        f005_control_binding=f005_control_binding,
+        f008_advanced_embeddings_by_arm=f008_advanced_embeddings_by_arm,
+        valid=valid,
+        scoring_spec=scoring_spec,
+        heldout_scorer=heldout_scorer,
+        require_control_arm_same_as_source=require_control_arm_same_as_source,
+    )
+    reloaded = reload_pretruth_seal(
+        Path(policy_seal_path), contract, outer, scoring_spec=scoring_spec,
+        f005_source_receipt=f005_source_receipt,
+        f005_control_binding=f005_control_binding,
+    )
+    _require(
+        reloaded["seal"] == seal
+        and reloaded["seal_sha256"] == seal["seal_sha256"],
+        "F008 recomputed pretruth policy differs from the existing immutable seal",
+    )
+    return {**bundle, "policy_reload": reloaded}
 
 
 def reload_pretruth_seal(path: Path, contract: Mapping[str, object], outer: int, *,
@@ -1136,6 +1215,44 @@ def _verify_pretruth_bundle(pretruth: Mapping[str, object], all_reloads: Mapping
     return seal
 
 
+def _predictions_from_sealed_scores(
+        seal: Mapping[str, object], *, score_bundles: Mapping[str, Mapping[str, object]],
+        policies: Mapping[str, Mapping[str, object]], labels: list[str],
+        probability_temperature: float,
+) -> dict[str, list[dict[str, str]]]:
+    """Turn already-authenticated sealed scores into outer predictions.
+
+    The caller has completed all pretruth validation before reaching this
+    helper.  It reads neither the contract nor an outer-truth row.
+    """
+    _require(
+        isinstance(labels, list) and _sha(labels) == seal["labels_sha256"],
+        "F008 output labels differ from the sealed label map",
+    )
+    _require(
+        isinstance(score_bundles, Mapping) and isinstance(policies, Mapping)
+        and set(score_bundles) == set(policies) and bool(score_bundles),
+        "F008 sealed score/policy inventory differs",
+    )
+    names = [row["audio_file"] for row in seal["outer_public_metadata"]]
+    outputs: dict[str, list[dict[str, str]]] = {}
+    for name in score_bundles:
+        score, policy = score_bundles[name], policies[name]
+        probabilities = reference_probabilities(
+            np.asarray(score["outer_known_scores"]),
+            np.asarray(score["outer_unknown_similarity"]),
+            policy["calibration"], np.asarray(score["outer_valid"]),
+            probability_temperature,
+        )
+        _require(probabilities.shape == (len(names), len(labels)),
+                 "F008 sealed probabilities do not align with outer public rows")
+        outputs[name] = [
+            {"audio_file": audio_file, "speaker_id": labels[int(index)]}
+            for audio_file, index in zip(names, probabilities.argmax(axis=1), strict=True)
+        ]
+    return outputs
+
+
 def outer_predictions_from_pretruth(
         contract: Mapping[str, object], pretruth: Mapping[str, object],
         all_reloads: Mapping[str, object], *, scoring_spec: Mapping[str, object],
@@ -1145,45 +1262,69 @@ def outer_predictions_from_pretruth(
     spec = normalize_scoring_spec(scoring_spec)
     _validate_contract(contract, spec)
     seal = _verify_pretruth_bundle(pretruth, all_reloads, contract, spec)
-    _require(isinstance(labels, list) and _sha(labels) == seal["labels_sha256"],
-             "F008 output labels differ from the sealed label map")
-    names = [row["audio_file"] for row in seal["outer_public_metadata"]]
-    outputs: dict[str, list[dict[str, str]]] = {}
     policies = {
         FROZEN_COMPARATOR: seal["comparator_policies"][FROZEN_COMPARATOR],
         F005_COMPARATOR: seal["comparator_policies"][F005_COMPARATOR],
         "selected_arm": seal["arm_policies"][seal["selected_arm"]],
     }
-    for comparator in COMPARATORS:
-        score = pretruth["score_bundles"][comparator]
-        probabilities = reference_probabilities(
-            np.asarray(score["outer_known_scores"]),
-            np.asarray(score["outer_unknown_similarity"]),
-            policies[comparator]["calibration"], np.asarray(score["outer_valid"]),
-            float(spec["probability_temperature"]),
-        )
-        _require(probabilities.shape == (len(names), len(labels)),
-                 "F008 sealed probabilities do not align with outer public rows")
-        outputs[comparator] = [
-            {"audio_file": name, "speaker_id": labels[int(index)]}
-            for name, index in zip(names, probabilities.argmax(axis=1), strict=True)
-        ]
-    return outputs
-
-
-def evaluate_outer_once(
-        contract: Mapping[str, object], pretruth: Mapping[str, object],
-        all_reloads: Mapping[str, object], outer_truth_rows: list[dict[str, object]],
-        labels: list[str], *, scoring_spec: Mapping[str, object], evaluation_path: Path,
-) -> dict[str, object]:
-    """Consume outer truth once, only after all disk-reloaded pretruth seals.
-
-    Authentication happens before any caller-provided truth row is inspected.
-    """
-    predictions = outer_predictions_from_pretruth(
-        contract, pretruth, all_reloads, scoring_spec=scoring_spec, labels=labels,
+    return _predictions_from_sealed_scores(
+        seal, score_bundles=pretruth["score_bundles"], policies=policies,
+        labels=labels, probability_temperature=float(spec["probability_temperature"]),
     )
-    seal = pretruth["policy_reload"]["seal"]
+
+
+def outer_predictions_for_active_arms_from_pretruth(
+        contract: Mapping[str, object], pretruth: Mapping[str, object],
+        all_reloads: Mapping[str, object], *, scoring_spec: Mapping[str, object],
+        labels: list[str], arm_ids: list[str],
+) -> dict[str, list[dict[str, str]]]:
+    """Return predictions for every sealed active arm without reading outer truth.
+
+    E0 needs a direct control-versus-energy comparison even when inner
+    calibration selected the control arm.  This function therefore evaluates
+    the exact active-arm inventory in its declared order, rather than
+    substituting a different selected arm.  Each arm's recomputed score
+    evidence must match that arm's pre-existing immutable policy seal.
+    """
+    spec = normalize_scoring_spec(scoring_spec)
+    _validate_contract(contract, spec)
+    _require(
+        isinstance(arm_ids, list) and arm_ids == list(spec["arm_ids"]),
+        "F008 active-arm outer evaluation must use the exact sealed active-arm order",
+    )
+    seal = _verify_pretruth_bundle(pretruth, all_reloads, contract, spec)
+    arm_scores = pretruth.get("arm_score_bundles")
+    _require(
+        isinstance(arm_scores, Mapping) and set(arm_scores) == set(spec["arm_ids"]),
+        "F008 active-arm score bundle inventory differs from the sealed spec",
+    )
+    policies: dict[str, Mapping[str, object]] = {}
+    scores: dict[str, Mapping[str, object]] = {}
+    for arm in arm_ids:
+        policy = seal["arm_policies"][arm]
+        score = arm_scores[arm]
+        _require(
+            isinstance(policy, Mapping) and isinstance(score, Mapping)
+            and _score_evidence(score) == policy["score_evidence"],
+            f"F008 {arm} score evidence changed after pretruth sealing",
+        )
+        policies[arm], scores[arm] = policy, score
+    return _predictions_from_sealed_scores(
+        seal, score_bundles=scores, policies=policies, labels=labels,
+        probability_temperature=float(spec["probability_temperature"]),
+    )
+
+
+def _assert_new_outer_evaluation_path(path: Path) -> Path:
+    path = Path(path)
+    if path.exists() or path.is_symlink():
+        raise FileExistsError(f"F008 outer fold was already evaluated once: {path}")
+    return path
+
+
+def _validate_outer_truth_rows(seal: Mapping[str, object],
+                               outer_truth_rows: list[dict[str, object]]) -> None:
+    """Authenticate public row identity before the first speaker-label read."""
     _require(isinstance(outer_truth_rows, list), "F008 outer truth must be an ordered list")
     observed = []
     for row in outer_truth_rows:
@@ -1199,23 +1340,86 @@ def evaluate_outer_once(
         })
     _require(observed == seal["outer_public_metadata"],
              "F008 outer truth public rows differ from the pretruth seal")
+
+
+def _evaluate_predictions_once(
+        *, schema_version: str, contract: Mapping[str, object],
+        pretruth: Mapping[str, object], predictions: Mapping[str, list[dict[str, str]]],
+        outer_truth_rows: list[dict[str, object]], labels: list[str],
+        evaluation_path: Path, extra: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    """Write one immutable outer-truth receipt for authenticated predictions."""
+    _assert_new_outer_evaluation_path(Path(evaluation_path))
+    seal = pretruth["policy_reload"]["seal"]
+    _validate_outer_truth_rows(seal, outer_truth_rows)
+    # ``score_predictions`` is intentionally the first code below that may
+    # consume an outer ``speaker_id``.
     metrics = {
-        comparator: score_predictions(outer_truth_rows, rows, labels)
-        for comparator, rows in predictions.items()
+        name: score_predictions(outer_truth_rows, rows, labels)
+        for name, rows in predictions.items()
     }
     body = {
-        "schema_version": EVALUATION_SCHEMA,
+        "schema_version": schema_version,
         "experiment_signature": contract["signature"],
         "outer_fold": pretruth["outer_fold"],
         "selected_arm": pretruth["selected_arm"],
         "policy_file_sha256": pretruth["policy_reload"]["file_sha256"],
         "policy_seal_sha256": pretruth["policy_reload"]["seal_sha256"],
         "outer_reference": outer_truth_rows,
-        "predictions": predictions,
+        "predictions": dict(predictions),
         "metrics": metrics,
         "one_shot_outer_evaluation": True,
         "outer_truth_first_access_stage": "after_all_disk_reloaded_pretruth_seals",
     }
+    if extra is not None:
+        _require(isinstance(extra, Mapping), "F008 outer-evaluation extra metadata must be a mapping")
+        _require(not (set(extra) & set(body)), "F008 outer-evaluation metadata collides with receipt fields")
+        body.update(extra)
     receipt = {**body, "evaluation_sha256": _sha(body)}
     _write_new_json(Path(evaluation_path), receipt)
     return receipt
+
+
+def evaluate_outer_once(
+        contract: Mapping[str, object], pretruth: Mapping[str, object],
+        all_reloads: Mapping[str, object], outer_truth_rows: list[dict[str, object]],
+        labels: list[str], *, scoring_spec: Mapping[str, object], evaluation_path: Path,
+) -> dict[str, object]:
+    """Consume outer truth once, only after all disk-reloaded pretruth seals.
+
+    Authentication happens before any caller-provided truth row is inspected.
+    """
+    predictions = outer_predictions_from_pretruth(
+        contract, pretruth, all_reloads, scoring_spec=scoring_spec, labels=labels,
+    )
+    return _evaluate_predictions_once(
+        schema_version=EVALUATION_SCHEMA, contract=contract, pretruth=pretruth,
+        predictions=predictions, outer_truth_rows=outer_truth_rows, labels=labels,
+        evaluation_path=evaluation_path,
+    )
+
+
+def evaluate_outer_active_arms_once(
+        contract: Mapping[str, object], pretruth: Mapping[str, object],
+        all_reloads: Mapping[str, object], outer_truth_rows: list[dict[str, object]],
+        labels: list[str], *, scoring_spec: Mapping[str, object], arm_ids: list[str],
+        evaluation_path: Path,
+) -> dict[str, object]:
+    """One-shot outer evaluation for every named sealed arm in an E0 screen.
+
+    This is intentionally distinct from the selected-arm comparator API: E0
+    must report both ``control_f005`` and ``energy_005`` even if calibration
+    selected control.  It reloads/validates every policy seal through the
+    prediction helper before accepting an outer row.
+    """
+    predictions = outer_predictions_for_active_arms_from_pretruth(
+        contract, pretruth, all_reloads, scoring_spec=scoring_spec,
+        labels=labels, arm_ids=arm_ids,
+    )
+    return _evaluate_predictions_once(
+        schema_version=ACTIVE_ARM_EVALUATION_SCHEMA, contract=contract,
+        pretruth=pretruth, predictions=predictions,
+        outer_truth_rows=outer_truth_rows, labels=labels,
+        evaluation_path=evaluation_path,
+        extra={"active_arm_ids": list(arm_ids)},
+    )
