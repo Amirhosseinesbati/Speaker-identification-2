@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "experiment_code": "S033",
+  "run_name": "S033-c002b-reference-resampling-stability-veto",
+  "hypothesis": "A false known accept caused by one unusually favorable enrollment reference is less stable under balanced one-reference-per-class resampling than a genuine frozen C002b known prediction. A calibrated stability veto can therefore reduce unknown-to-known errors without reranking known identities.",
+  "source": {
+    "f005_source_config": "configs/train/campp_f005_consistency.json",
+    "recipe": "C002b",
+    "cache_kind": "identity"
+  },
+  "output_root": "artifacts/research/s033_reference_resampling",
+  "fold_ids": [0, 1],
+  "sampling": {
+    "n_resamples": 64,
+    "per_class": 1,
+    "seed": 20260910,
+    "replace": false,
+    "backend": "cuda",
+    "query_batch_size": 256,
+    "reference_scope": "known_valid_enrollment_allowed_only",
+    "query_scope": "original_calibration_query_then_outer_evaluation",
+    "group_exclusion": "role_groups_must_be_disjoint"
+  },
+  "selection": {
+    "metric": "inner_macro_f1_447",
+    "threshold_grid": [0.0, 0.015625, 0.03125, 0.046875, 0.0625, 0.078125, 0.09375, 0.109375, 0.125, 0.140625, 0.15625, 0.171875, 0.1875, 0.203125, 0.21875, 0.234375, 0.25, 0.265625, 0.28125, 0.296875, 0.3125, 0.328125, 0.34375, 0.359375, 0.375, 0.390625, 0.40625, 0.421875, 0.4375, 0.453125, 0.46875, 0.484375, 0.5, 0.515625, 0.53125, 0.546875, 0.5625, 0.578125, 0.59375, 0.609375, 0.625, 0.640625, 0.65625, 0.671875, 0.6875, 0.703125, 0.71875, 0.734375, 0.75, 0.765625, 0.78125, 0.796875, 0.8125, 0.828125, 0.84375, 0.859375, 0.875, 0.890625, 0.90625, 0.921875, 0.9375, 0.953125, 0.96875, 0.984375, 1.0],
+    "tie_break": "lowest_threshold_least_intervention",
+    "outer_labels_forbidden_until_sealed": true
+  },
+  "screen_gate": {
+    "minimum_pooled_macro_f1": 0.9585282892229405,
+    "require_positive_each_fold": true,
+    "minimum_unknown_to_known_reduction": 10,
+    "maximum_known_to_unknown_increase": 5,
+    "require_no_known_rerank": true
+  },
+  "tracking": {
+    "binding_state": "artifacts/infrastructure/C002_preparation/mlflow_state.json",
+    "experiment_id": "1",
+    "upload": ["resolved_config", "source_provenance", "src_snapshot", "pretruth_seals", "reports"],
+    "forbidden": ["raw_audio", "embeddings", "model_weights", "optimizer_state", "credentials", "per_file_predictions"]
+  },
+  "retention": {
+    "local_transfer": "none_for_screen_only",
+    "server_only": ["cache_reuse_receipts", "run_reports"]
+  }
+}

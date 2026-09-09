@@ -277,6 +277,98 @@ def frozen_winner_stability(
     return stability
 
 
+def group_disjoint_frozen_winner_stability(
+    query_embeddings,
+    query_valid,
+    query_groups,
+    reference_embeddings,
+    reference_valid,
+    reference_groups,
+    galleries: ResampledGalleries,
+    baseline_predictions,
+    *,
+    device: str = "cpu",
+    query_batch_size: int = 128,
+    unknown_label: int = 0,
+) -> np.ndarray:
+    """Vectorized stability for a gallery disjoint from every query group.
+
+    This is the same frozen-winner statistic as :func:`frozen_winner_stability`,
+    specialized to a role assignment whose reference groups and query groups are
+    disjoint.  That precondition removes the need for per-query draw repair and
+    makes a large, inference-only screen practical.  It does not change a
+    prediction or manufacture a replacement identity.
+
+    ``device`` is deliberately limited to ``"cpu"`` and ``"cuda"``.  CUDA is
+    used only for batched cosine products over already cached embeddings; no
+    model, audio, or training state is loaded by this function.
+    """
+    unknown_label = _unknown_label(unknown_label)
+    if device not in {"cpu", "cuda"}:
+        raise ValueError("device must be 'cpu' or 'cuda'")
+    query_batch_size = _require_count("query_batch_size", query_batch_size)
+
+    raw_queries = np.asarray(query_embeddings)
+    raw_references = np.asarray(reference_embeddings)
+    if raw_queries.ndim != 2 or raw_references.ndim != 2:
+        raise ValueError("query and reference embeddings must be two-dimensional")
+    query_valid = _valid_mask("query_valid", query_valid, raw_queries.shape[0])
+    reference_valid = _valid_mask("reference_valid", reference_valid, raw_references.shape[0])
+    queries = _unit_embeddings("query_embeddings", raw_queries, query_valid)
+    references = _unit_embeddings("reference_embeddings", raw_references, reference_valid)
+    if queries.shape[1] != references.shape[1]:
+        raise ValueError("query and reference embedding dimensions differ")
+    query_groups = _group_vector("query_groups", query_groups, len(queries))
+    reference_groups = _group_vector("reference_groups", reference_groups, len(references))
+    if set(query_groups.tolist()) & set(reference_groups.tolist()):
+        raise ValueError("fast stability path requires group-disjoint queries and references")
+    baseline = _integer_vector("baseline_predictions", baseline_predictions, nonempty=False)
+    if len(baseline) != len(queries):
+        raise ValueError("baseline predictions must align with query rows")
+    _validate_galleries(galleries, len(references), unknown_label)
+    source_indices = np.asarray(galleries.source_indices)
+    if not np.all(reference_valid[source_indices]):
+        raise ValueError("a gallery source row is invalid")
+    class_labels = np.asarray(galleries.class_labels)
+    known = query_valid & (baseline != unknown_label)
+    if np.any(known) and not np.isin(baseline[known], class_labels).all():
+        raise ValueError("a valid frozen baseline winner is absent from the gallery classes")
+
+    try:
+        import torch
+    except ImportError as error:
+        raise RuntimeError("Vectorized S033 stability requires the project's Torch dependency") from error
+    if device == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("S033 CUDA stability was requested but CUDA is unavailable")
+
+    # Validation above intentionally uses float64 so malformed unit vectors are
+    # caught before device transfer.  C002's frozen embedding cache and its
+    # reference scorer are float32, so preserving float32 here matches the
+    # source numerical representation while keeping memory bounded.
+    sampled = np.asarray(galleries.indices)
+    reference_tensor = torch.as_tensor(references.astype(np.float32, copy=False), device=device)
+    gallery_tensor = reference_tensor[
+        torch.as_tensor(sampled.reshape(-1), dtype=torch.long, device=device)
+    ].reshape((*sampled.shape, references.shape[1]))
+    class_tensor = torch.as_tensor(class_labels, dtype=torch.long, device=device)
+    stability = np.zeros(len(queries), dtype=np.float64)
+    positions = np.flatnonzero(known)
+    with torch.no_grad():
+        for start in range(0, len(positions), query_batch_size):
+            batch_positions = positions[start:start + query_batch_size]
+            batch = torch.as_tensor(
+                queries[batch_positions].astype(np.float32, copy=False), device=device,
+            )
+            # [batch, resamples, classes, references-per-class]
+            similarity = torch.einsum("bd,rcpd->brcp", batch, gallery_tensor)
+            winners = class_tensor[similarity.amax(dim=-1).argmax(dim=-1)]
+            expected = torch.as_tensor(baseline[batch_positions], dtype=torch.long, device=device)
+            stability[batch_positions] = (
+                (winners == expected[:, None]).to(dtype=torch.float64).mean(dim=1).cpu().numpy()
+            )
+    return stability
+
+
 def apply_stability_veto(
     baseline_predictions,
     stability,

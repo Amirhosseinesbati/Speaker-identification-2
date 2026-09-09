@@ -7,6 +7,7 @@ import numpy as np
 from speaker_id.research.s033_reference_resampling import (
     apply_stability_veto,
     frozen_winner_stability,
+    group_disjoint_frozen_winner_stability,
     make_balanced_resampled_galleries,
 )
 
@@ -84,6 +85,32 @@ class ReferenceResamplingTests(unittest.TestCase):
         )
         self.assertEqual(stability.shape, (1,))
         self.assertTrue(np.isfinite(stability[0]))
+
+    def test_group_disjoint_vectorized_path_matches_general_statistic(self):
+        references, _, reference_groups, galleries = self.reference_fixture()
+        queries = np.asarray([[1.0, 0.0, 0.0], [0.0, 0.0, 1.0]], dtype=np.float32)
+        valid = np.asarray([True, True])
+        groups = np.asarray(["q_false", "q_known"], dtype=object)
+        baseline = np.asarray([1, 1], dtype=np.int64)
+        expected = frozen_winner_stability(
+            queries, valid, groups, references, np.ones(len(references), dtype=bool),
+            reference_groups, galleries, baseline,
+        )
+        actual = group_disjoint_frozen_winner_stability(
+            queries, valid, groups, references, np.ones(len(references), dtype=bool),
+            reference_groups, galleries, baseline, device="cpu", query_batch_size=1,
+        )
+        np.testing.assert_allclose(actual, expected, rtol=0.0, atol=0.0)
+
+    def test_group_disjoint_path_refuses_a_reference_group_in_the_query(self):
+        references, _, reference_groups, galleries = self.reference_fixture()
+        with self.assertRaisesRegex(ValueError, "group-disjoint"):
+            group_disjoint_frozen_winner_stability(
+                np.asarray([[1.0, 0.0, 0.0]], dtype=np.float32), np.asarray([True]),
+                np.asarray([reference_groups[0]], dtype=object), references,
+                np.ones(len(references), dtype=bool), reference_groups, galleries,
+                np.asarray([1], dtype=np.int64), device="cpu",
+            )
 
     def test_invalid_embeddings_and_empty_group_exclusion_are_rejected(self):
         references, labels, reference_groups, galleries = self.reference_fixture()
