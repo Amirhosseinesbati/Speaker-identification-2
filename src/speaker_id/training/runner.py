@@ -52,6 +52,22 @@ def _tracking_fold_report(report: dict, config: dict) -> dict:
     return safe
 
 
+def _tracking_config(resolved: dict, config: dict) -> dict:
+    """Keep file-level labels and role tables out of private-safe MLflow runs."""
+    if config.get("retention", {}).get("mlflow_upload_private_reports", True):
+        return resolved
+    safe = dict(resolved)
+    for key in ("labels", "manifest", "roles", "folds"):
+        safe.pop(key, None)
+    safe["private_labels_uploaded"] = False
+    safe["private_role_rows_uploaded"] = False
+    return safe
+
+
+def _terminal_status(complete_oof: bool) -> str:
+    return "complete" if complete_oof else "screen_complete"
+
+
 def extract_all(encoder, contract: dict, root: Path, cache: Path, tracker) -> tuple[np.ndarray, np.ndarray]:
     config = contract["config"]
     cache.mkdir(parents=True, exist_ok=True)
@@ -202,9 +218,10 @@ def execute(contract: dict, root: Path, binding_path: Path, *, resume_dir: Path 
               "run_kind": config["mode"], "training_started": config["mode"] == "fine_tune"}
     resolved = {"experiment": config, "model": contract["model"], "input_hashes": contract["input_hashes"], "code_hashes": contract["code_hashes"],
                 "signature": contract["signature"], "resume": bool(resume_dir), "output_directory": str(output)}
+    tracking_resolved = _tracking_config(resolved, config)
     parent = DurableMLflowRun.prepare(spool_dir=output / "tracking" / attempt,
                                      run_name=config["run_name"] + ("-resume" if resume_dir else ""),
-                                     config=resolved, **common)
+                                     config=tracking_resolved, **common)
     try:
         parent.flush(strict=True)  # No extraction, calibration or optimizer step before live confirmation.
         parent.verify_artifacts()
@@ -233,7 +250,7 @@ def execute(contract: dict, root: Path, binding_path: Path, *, resume_dir: Path 
             fold_output.mkdir(parents=True, exist_ok=True)
             current_child = DurableMLflowRun.prepare(spool_dir=fold_output / "tracking" / attempt,
                                                     run_name=f"{config['run_name']}-fold{outer}",
-                                                    config={**resolved, "outer_fold": outer}, parent_run_id=parent.run_id, **common)
+                                                    config={**tracking_resolved, "outer_fold": outer}, parent_run_id=parent.run_id, **common)
             current_child.flush(strict=True)
             fit_report = None
             if config["mode"] == "fine_tune":
@@ -290,10 +307,12 @@ def execute(contract: dict, root: Path, binding_path: Path, *, resume_dir: Path 
         )
         parent.write_report(tracked_report, markdown=f"# {config['run_name']}\n\n{config['hypothesis']}\n\n{summary_line}\n")
         parent.finish("FINISHED", strict=True)
-        write_json(output / "experiment_state.json", {**state, "status": "complete"})
+        terminal_status = _terminal_status(complete_oof)
+        write_json(output / "experiment_state.json", {**state, "status": terminal_status})
         return {"output": str(output), "parent_run_id": parent.run_id,
                 "macro_f1": None if pooled is None else pooled["macro_f1"],
-                "complete_oof": complete_oof, "evaluated_fold_ids": list(run_fold_ids)}
+                "complete_oof": complete_oof, "evaluated_fold_ids": list(run_fold_ids),
+                "status": terminal_status}
     except BaseException as error:
         failure = {"status": "failed", "error_type": type(error).__name__, "error": str(error),
                    "signature": contract["signature"], "resume_directory": str(output)}
