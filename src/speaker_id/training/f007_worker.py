@@ -211,14 +211,19 @@ def f007_dual_aam_task(
     }
 
 
-def attest_f007_runtime(contract_or_config: dict) -> dict:
+def attest_f007_runtime(f007_contract: dict) -> dict:
     """Do the one targeted CUDA/runtime check and return a reusable receipt.
 
     The F007 orchestrator calls this once per logical run.  Tail units receive
     the receipt and validate only its immutable identity instead of repeating
     device/package/data checks for every arm.
     """
-    config = _f007_config(contract_or_config)
+    # The one-time runtime receipt is meaningful only for a fully authenticated
+    # F007 contract, never for a caller-supplied lookalike config.
+    from speaker_id.training.f007_contract import validate_f007_contract
+
+    validate_f007_contract(f007_contract)
+    config = _f007_config(f007_contract)
     execution = config.get("execution")
     _require(isinstance(execution, dict), "F007 execution policy is missing")
     expected_threads = execution.get("thread_environment")
@@ -248,7 +253,7 @@ def attest_f007_runtime(contract_or_config: dict) -> dict:
     torch.use_deterministic_algorithms(True, warn_only=False)
     body = {
         "schema_version": "f007-runtime-receipt-v1",
-        "f007_signature": _f007_signature(contract_or_config),
+        "f007_signature": _f007_signature(f007_contract),
         "execution": execution,
         "device": "cuda",
         "gpu_name": name,
@@ -259,13 +264,23 @@ def attest_f007_runtime(contract_or_config: dict) -> dict:
     return {**body, "receipt_sha256": _sha(body)}
 
 
-def _validate_runtime_receipt(receipt: dict, contract_or_config: dict) -> None:
+def _validate_runtime_receipt(receipt: dict, f007_contract: dict) -> None:
     _require(isinstance(receipt, dict), "F007 worker requires a runtime receipt")
+    from speaker_id.training.f007_contract import validate_f007_contract
+
+    validate_f007_contract(f007_contract)
+    config = _f007_config(f007_contract)
     body = {key: value for key, value in receipt.items() if key != "receipt_sha256"}
     _require(
         receipt.get("schema_version") == "f007-runtime-receipt-v1"
         and receipt.get("receipt_sha256") == _sha(body)
-        and receipt.get("f007_signature") == _f007_signature(contract_or_config)
+        and receipt.get("f007_signature") == _f007_signature(f007_contract)
+        and receipt.get("execution") == config["execution"]
+        and receipt.get("device") == "cuda"
+        and receipt.get("cuda_available") is True
+        and receipt.get("cpu_threads") == config["cpu_threads"]
+        and isinstance(receipt.get("gpu_name"), str)
+        and config["execution"]["gpu_name_contains"] in receipt["gpu_name"]
         and receipt.get("checked_once_per_logical_run") is True,
         "F007 runtime receipt is invalid or belongs to another run",
     )
@@ -696,7 +711,9 @@ def fit_l2sp_tail(
     receipt for this particular fold.
     """
     import torch
+    from speaker_id.training.f007_contract import validate_f007_contract
 
+    validate_f007_contract(f007_contract)
     config = _f007_config(f007_contract)
     _validate_runtime_receipt(runtime_receipt, f007_contract)
     arm = _arm(config, arm_id)
@@ -704,6 +721,10 @@ def fit_l2sp_tail(
     head_steps, total = fit["adaptation_schedule"]["head_only_steps"], adaptation_total_steps(fit)
     _require(head_steps == 600 and total == 1100,
              "F007 is pinned to the completed F005 600+500 schedule")
+    _require(
+        source_receipt == f007_contract.get("source_f005_receipt"),
+        "F007 passed F005 source receipt differs from its authenticated contract",
+    )
     _require(f005_contract.get("signature") == source_receipt.get("experiment_state", {}).get("experiment_signature"),
              "F007 current F005 contract differs from the attested source experiment")
     output = Path(output)
