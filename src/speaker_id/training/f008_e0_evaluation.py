@@ -80,6 +80,21 @@ def _is_sha256(value: object) -> bool:
     )
 
 
+def _outer_fold_matches(value: object, outer: int) -> bool:
+    """Compare a role-table fold with an integer outer fold safely.
+
+    The authoritative role CSV is loaded as text, while synthetic contracts
+    and sealed reports use integers.  Treat only canonical decimal strings (or
+    integer values) as equal so a schema/type difference does not silently
+    remove every outer row from the truth provider.
+    """
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, (int, np.integer)):
+        return int(value) == outer
+    return isinstance(value, str) and value.strip() == str(outer)
+
+
 def _read_json(path: Path, label: str) -> dict[str, Any]:
     path = Path(path)
     _require(path.is_file() and not path.is_symlink(),
@@ -610,7 +625,7 @@ def materialize_outer_truth_rows(
     folds_by_name = {row.get("audio_file"): row for row in folds if isinstance(row, Mapping)}
     roles_by_name = {
         row.get("audio_file"): row for row in roles
-        if isinstance(row, Mapping) and row.get("outer_fold") == outer
+        if isinstance(row, Mapping) and _outer_fold_matches(row.get("outer_fold"), outer)
     }
     _require(
         len(manifest_by_name) == len(manifest) and len(folds_by_name) == len(folds)
@@ -699,7 +714,7 @@ def _outer_rows_for_receipt(
     folds = {row.get("audio_file"): row for row in contract["folds"]}
     roles = {
         row.get("audio_file"): row for row in contract["roles"]
-        if row.get("outer_fold") == outer
+        if _outer_fold_matches(row.get("outer_fold"), outer)
     }
     names: set[str] = set()
     output: list[dict[str, object]] = []

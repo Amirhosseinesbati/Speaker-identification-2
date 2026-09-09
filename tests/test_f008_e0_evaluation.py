@@ -259,6 +259,25 @@ class F008E0OuterEvaluationTests(unittest.TestCase):
         finally:
             self.contract = original
 
+    def test_materialized_outer_rows_accept_authoritative_text_fold_ids(self) -> None:
+        contract = copy.deepcopy(self.contract)
+        for row in contract["roles"]:
+            row["outer_fold"] = str(row["outer_fold"])
+        metadata = []
+        for manifest_row, fold_row in zip(contract["manifest"], contract["folds"], strict=True):
+            if manifest_row["audio_file"].startswith("fold0_"):
+                metadata.append({
+                    "audio_file": manifest_row["audio_file"],
+                    "group_id": fold_row["group_id"],
+                    "duration_seconds": 4.0,
+                    "has_nonzero_signal": True,
+                })
+        rows = e0.materialize_outer_truth_rows(
+            contract, 0, {"outer_public_metadata": metadata},
+        )
+        self.assertEqual(len(rows), 5)
+        self.assertTrue(all(row["duration_seconds"] == 4.0 for row in rows))
+
     def test_every_seal_must_reload_before_truth_provider_runs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
