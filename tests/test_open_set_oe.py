@@ -9,6 +9,7 @@ import unittest
 
 from speaker_id.adaptation.open_set_oe import (
     energy_margin_oe_loss,
+    energy_separation_oe_loss,
     raw_cosine_logits,
     uniform_oe_loss,
 )
@@ -88,6 +89,64 @@ class OpenSetOELossTests(unittest.TestCase):
         self.assertGreater(concentrated_loss.item(), diffuse_loss.item())
         concentrated_loss.backward()
         self.assertTrue(torch.isfinite(concentrated.grad).all())
+
+    def test_energy_separation_matches_formula_and_preserves_both_gradient_paths(self) -> None:
+        import torch
+        from torch.nn import functional as F
+
+        known = torch.tensor([[0.8, -0.5], [0.2, 0.1]], requires_grad=True)
+        unknown = torch.tensor([[-0.1, 0.1], [-0.7, -0.8]], requires_grad=True)
+        loss, diagnostics = energy_separation_oe_loss(
+            known,
+            unknown,
+            energy_temperature=0.5,
+            maximum_known_energy=-0.5,
+            minimum_unknown_energy=0.25,
+            softplus_temperature=0.2,
+        )
+        known_energy = -0.5 * torch.logsumexp(known / 0.5, dim=1)
+        unknown_energy = -0.5 * torch.logsumexp(unknown / 0.5, dim=1)
+        expected = 0.5 * (
+            F.softplus((known_energy + 0.5) / 0.2).mean()
+            + F.softplus((0.25 - unknown_energy) / 0.2).mean()
+        )
+        self.assertTrue(torch.allclose(loss, expected, atol=1.0e-7, rtol=0.0))
+        self.assertEqual(diagnostics["objective"], "energy_separation_oe")
+        self.assertEqual(diagnostics["known_batch_size"], 2)
+        self.assertEqual(diagnostics["unknown_batch_size"], 2)
+        self.assertEqual(diagnostics["class_count"], 2)
+        self.assertEqual(diagnostics["maximum_known_energy"], -0.5)
+        self.assertEqual(diagnostics["minimum_unknown_energy"], 0.25)
+        self.assertEqual(diagnostics["declared_energy_gap"], 0.75)
+        self.assertTrue(all(type(value) in (str, int, float) for value in diagnostics.values()))
+        self.assertEqual(json.loads(json.dumps(diagnostics, allow_nan=False)), diagnostics)
+        loss.backward()
+        self.assertTrue(torch.isfinite(known.grad).all())
+        self.assertTrue(torch.isfinite(unknown.grad).all())
+
+    def test_energy_separation_rewards_low_known_and_high_unknown_energy(self) -> None:
+        import torch
+
+        good_known = torch.tensor([[1.0, -1.0]], requires_grad=True)
+        good_unknown = torch.tensor([[-1.0, -1.0]], requires_grad=True)
+        bad_known = torch.tensor([[-1.0, -1.0]], requires_grad=True)
+        bad_unknown = torch.tensor([[1.0, -1.0]], requires_grad=True)
+        arguments = {
+            "energy_temperature": 0.5,
+            "maximum_known_energy": -0.5,
+            "minimum_unknown_energy": 0.3,
+            "softplus_temperature": 0.25,
+        }
+        good_loss, good_info = energy_separation_oe_loss(good_known, good_unknown, **arguments)
+        bad_known_loss, _ = energy_separation_oe_loss(bad_known, good_unknown, **arguments)
+        bad_unknown_loss, _ = energy_separation_oe_loss(good_known, bad_unknown, **arguments)
+        self.assertLess(good_info["mean_known_energy"], arguments["maximum_known_energy"])
+        self.assertGreater(good_info["mean_unknown_energy"], arguments["minimum_unknown_energy"])
+        self.assertGreater(bad_known_loss.item(), good_loss.item())
+        self.assertGreater(bad_unknown_loss.item(), good_loss.item())
+        good_loss.backward()
+        self.assertTrue(torch.isfinite(good_known.grad).all())
+        self.assertTrue(torch.isfinite(good_unknown.grad).all())
 
     def test_uniform_oe_matches_uniform_cross_entropy_and_penalizes_concentration(self) -> None:
         import torch
@@ -187,6 +246,56 @@ class OpenSetOELossTests(unittest.TestCase):
             with self.subTest(temperature=bad):
                 with self.assertRaises((TypeError, ValueError)):
                     uniform_oe_loss(valid, temperature=bad)
+
+    def test_energy_separation_rejects_unpaired_logits_and_overlapping_margins(self) -> None:
+        import torch
+
+        known = torch.zeros((1, 2), dtype=torch.float32)
+        unknown = torch.zeros((2, 2), dtype=torch.float32)
+        arguments = {
+            "energy_temperature": 0.5,
+            "maximum_known_energy": -0.5,
+            "minimum_unknown_energy": 0.3,
+            "softplus_temperature": 0.25,
+        }
+        # Different row counts are intentional and supported; the two streams
+        # need only share the AAM class axis and device.
+        loss, info = energy_separation_oe_loss(known, unknown, **arguments)
+        self.assertTrue(math.isfinite(loss.item()))
+        self.assertEqual((info["known_batch_size"], info["unknown_batch_size"]), (1, 2))
+        malformed_pairs = [
+            (known, torch.zeros((1, 3))),
+            (known, torch.zeros((1, 2), dtype=torch.float64)),
+            (known, torch.tensor([[1.2, 0.0]])),
+            (known, torch.empty((1, 2), device="meta")),
+        ]
+        for known_logits, unknown_logits in malformed_pairs:
+            with self.subTest(known=repr(known_logits), unknown=repr(unknown_logits)):
+                with self.assertRaises((ValueError, FloatingPointError)):
+                    energy_separation_oe_loss(known_logits, unknown_logits, **arguments)
+        for maximum_known, minimum_unknown in ((0.3, 0.3), (0.4, 0.3)):
+            with self.subTest(maximum_known=maximum_known, minimum_unknown=minimum_unknown):
+                with self.assertRaises(ValueError):
+                    energy_separation_oe_loss(
+                        known,
+                        unknown,
+                        energy_temperature=0.5,
+                        maximum_known_energy=maximum_known,
+                        minimum_unknown_energy=minimum_unknown,
+                        softplus_temperature=0.25,
+                    )
+        invalid_hyperparameters = [
+            {"energy_temperature": True},
+            {"maximum_known_energy": float("nan")},
+            {"minimum_unknown_energy": float("inf")},
+            {"softplus_temperature": 0.0},
+        ]
+        for override in invalid_hyperparameters:
+            with self.subTest(override=override):
+                candidate = dict(arguments)
+                candidate.update(override)
+                with self.assertRaises((TypeError, ValueError)):
+                    energy_separation_oe_loss(known, unknown, **candidate)
 
 
 if __name__ == "__main__":

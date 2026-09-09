@@ -105,6 +105,85 @@ def energy_margin_oe_loss(
     }
 
 
+def energy_separation_oe_loss(
+    known_cosine_logits: "torch.Tensor",
+    unknown_cosine_logits: "torch.Tensor",
+    *,
+    energy_temperature: Real,
+    maximum_known_energy: Real,
+    minimum_unknown_energy: Real,
+    softplus_temperature: Real = 1.0,
+) -> tuple["torch.Tensor", dict[str, float | int | str]]:
+    """Keep known energy low while pushing unknown energy above a fixed gap.
+
+    The two inputs are pre-margin, unscaled cosine logits against the same AAM
+    head.  They may contain different numbers of rows, so known and unknown
+    data loaders can use independent batch sizes; both must still expose the
+    same known-class columns on the same device.  For
+    ``energy = -T * logsumexp(logits / T)``, the objective is
+
+    ``0.5 * [mean(softplus((known_energy - max_known) / S))``
+    ``       + mean(softplus((min_unknown - unknown_energy) / S))]``.
+
+    ``minimum_unknown_energy`` must be strictly greater than
+    ``maximum_known_energy``.  This makes the separation gap explicit and
+    prevents a configuration from silently requesting overlapping acceptance
+    regions.  Equal weighting of the two batch means prevents one stream's
+    batch size from changing the intended objective scale.
+    """
+    import torch
+    from torch.nn import functional as F
+
+    _validate_energy_separation_logits(known_cosine_logits, unknown_cosine_logits)
+    temperature = _positive_real("energy_temperature", energy_temperature)
+    maximum_known = _finite_real("maximum_known_energy", maximum_known_energy)
+    minimum_unknown = _finite_real("minimum_unknown_energy", minimum_unknown_energy)
+    if minimum_unknown <= maximum_known:
+        raise ValueError(
+            "minimum_unknown_energy must be strictly greater than maximum_known_energy"
+        )
+    softness = _positive_real("softplus_temperature", softplus_temperature)
+
+    with torch.autocast(device_type=known_cosine_logits.device.type, enabled=False):
+        known_energy = -temperature * torch.logsumexp(known_cosine_logits / temperature, dim=1)
+        unknown_energy = -temperature * torch.logsumexp(
+            unknown_cosine_logits / temperature, dim=1
+        )
+        known_penalty = F.softplus((known_energy - maximum_known) / softness).mean()
+        unknown_penalty = F.softplus((minimum_unknown - unknown_energy) / softness).mean()
+        loss = 0.5 * (known_penalty + unknown_penalty)
+    _require_finite_tensor("known open-set energy", known_energy)
+    _require_finite_tensor("unknown open-set energy", unknown_energy)
+    _require_finite_scalar("known energy-separation penalty", known_penalty)
+    _require_finite_scalar("unknown energy-separation penalty", unknown_penalty)
+    _require_finite_scalar("energy-separation OE loss", loss)
+
+    detached_known = known_energy.detach()
+    detached_unknown = unknown_energy.detach()
+    return loss, {
+        "objective": "energy_separation_oe",
+        "known_batch_size": int(known_cosine_logits.shape[0]),
+        "unknown_batch_size": int(unknown_cosine_logits.shape[0]),
+        "class_count": int(known_cosine_logits.shape[1]),
+        "energy_temperature": temperature,
+        "maximum_known_energy": maximum_known,
+        "minimum_unknown_energy": minimum_unknown,
+        "declared_energy_gap": minimum_unknown - maximum_known,
+        "softplus_temperature": softness,
+        "mean_known_energy": float(detached_known.mean().cpu()),
+        "mean_unknown_energy": float(detached_unknown.mean().cpu()),
+        "known_margin_satisfied_fraction": float(
+            (detached_known <= maximum_known).float().mean().cpu()
+        ),
+        "unknown_margin_satisfied_fraction": float(
+            (detached_unknown >= minimum_unknown).float().mean().cpu()
+        ),
+        "known_penalty": float(known_penalty.detach().cpu()),
+        "unknown_penalty": float(unknown_penalty.detach().cpu()),
+        "loss": float(loss.detach().cpu()),
+    }
+
+
 def uniform_oe_loss(
     cosine_logits: "torch.Tensor",
     *,
@@ -179,6 +258,18 @@ def _validate_cosine_logits(cosine_logits: "torch.Tensor") -> None:
     maximum = float(detached.max().cpu())
     if minimum < -1.0 - _COSINE_ROUNDING_TOLERANCE or maximum > 1.0 + _COSINE_ROUNDING_TOLERANCE:
         raise ValueError("cosine_logits must be bounded by the cosine interval [-1, 1]")
+
+
+def _validate_energy_separation_logits(
+    known_cosine_logits: "torch.Tensor",
+    unknown_cosine_logits: "torch.Tensor",
+) -> None:
+    _validate_cosine_logits(known_cosine_logits)
+    _validate_cosine_logits(unknown_cosine_logits)
+    if known_cosine_logits.shape[1] != unknown_cosine_logits.shape[1]:
+        raise ValueError("known and unknown cosine logits must have the same class count")
+    if known_cosine_logits.device != unknown_cosine_logits.device:
+        raise ValueError("known and unknown cosine logits must be on the same device")
 
 
 def _validate_dense_fp32_matrix(name: str, tensor: object) -> None:
