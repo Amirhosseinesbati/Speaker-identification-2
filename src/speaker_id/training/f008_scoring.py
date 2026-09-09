@@ -85,6 +85,29 @@ def _finite(value: object, name: str, *, nonnegative: bool = False) -> float:
     return result
 
 
+def normalize_outer_duration(value: object) -> float:
+    """Return a finite nonnegative Python float for public outer metadata.
+
+    The authenticated source manifest is CSV-backed, so its duration field is
+    text until it is normalized.  Synthetic and cache-adjacent callers can
+    also present NumPy real scalars.  This narrow boundary accepts only those
+    scalar representations, rejects booleans, and turns the result into a
+    JSON-safe Python float before it is placed in a seal or receipt.
+    """
+    _require(
+        isinstance(value, (str, int, float, np.integer, np.floating))
+        and not isinstance(value, (bool, np.bool_)),
+        "F008 outer duration must be a finite number",
+    )
+    try:
+        result = float(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError("F008 outer duration must be a finite number") from error
+    _require(math.isfinite(result) and result >= 0.0,
+             "F008 outer duration must be a finite nonnegative number")
+    return result
+
+
 def _array_receipt(value: object) -> dict[str, object]:
     array = np.asarray(value)
     return {
@@ -343,7 +366,7 @@ def _outer_public_metadata(contract: Mapping[str, object], outer: int,
         fold = folds.get(name)
         _require(isinstance(name, str) and isinstance(fold, Mapping),
                  "F008 outer public row has no aligned fold")
-        duration = _finite(row.get("duration_seconds"), "outer duration", nonnegative=True)
+        duration = normalize_outer_duration(row.get("duration_seconds"))
         group_id = fold.get("group_id")
         _require(isinstance(group_id, str) and group_id,
                  "F008 outer public row has no content group")
@@ -1323,13 +1346,13 @@ def _assert_new_outer_evaluation_path(path: Path) -> Path:
 
 
 def _validate_outer_truth_rows(seal: Mapping[str, object],
-                               outer_truth_rows: list[dict[str, object]]) -> None:
+                               outer_truth_rows: list[dict[str, object]]) -> list[dict[str, object]]:
     """Authenticate public row identity before the first speaker-label read."""
     _require(isinstance(outer_truth_rows, list), "F008 outer truth must be an ordered list")
     observed = []
     for row in outer_truth_rows:
         _require(isinstance(row, Mapping), "F008 outer truth row must be a mapping")
-        duration = _finite(row.get("duration_seconds"), "outer duration", nonnegative=True)
+        duration = normalize_outer_duration(row.get("duration_seconds"))
         group_id = row.get("group_id")
         _require(isinstance(row.get("audio_file"), str) and isinstance(group_id, str) and group_id,
                  "F008 outer truth public metadata are incomplete")
@@ -1340,6 +1363,7 @@ def _validate_outer_truth_rows(seal: Mapping[str, object],
         })
     _require(observed == seal["outer_public_metadata"],
              "F008 outer truth public rows differ from the pretruth seal")
+    return observed
 
 
 def _evaluate_predictions_once(
@@ -1351,7 +1375,7 @@ def _evaluate_predictions_once(
     """Write one immutable outer-truth receipt for authenticated predictions."""
     _assert_new_outer_evaluation_path(Path(evaluation_path))
     seal = pretruth["policy_reload"]["seal"]
-    _validate_outer_truth_rows(seal, outer_truth_rows)
+    public_metadata = _validate_outer_truth_rows(seal, outer_truth_rows)
     # ``score_predictions`` is intentionally the first code below that may
     # consume an outer ``speaker_id``.
     metrics = {
@@ -1365,7 +1389,20 @@ def _evaluate_predictions_once(
         "selected_arm": pretruth["selected_arm"],
         "policy_file_sha256": pretruth["policy_reload"]["file_sha256"],
         "policy_seal_sha256": pretruth["policy_reload"]["seal_sha256"],
-        "outer_reference": outer_truth_rows,
+        # The score function above is deliberately the first consumer of a
+        # speaker label.  Once it has validated those labels, persist only the
+        # authenticated public metadata so NumPy duration scalars cannot leak
+        # into the canonical JSON receipt.
+        "outer_reference": [
+            {
+                "audio_file": metadata["audio_file"],
+                "speaker_id": row["speaker_id"],
+                "group_id": metadata["group_id"],
+                "duration_seconds": metadata["duration_seconds"],
+                "has_nonzero_signal": metadata["has_nonzero_signal"],
+            }
+            for row, metadata in zip(outer_truth_rows, public_metadata, strict=True)
+        ],
         "predictions": dict(predictions),
         "metrics": metrics,
         "one_shot_outer_evaluation": True,

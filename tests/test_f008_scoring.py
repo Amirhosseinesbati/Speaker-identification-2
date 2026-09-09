@@ -302,6 +302,50 @@ class F008ScoringTests(unittest.TestCase):
                     policy_seal_path=root / "drift.json", heldout_scorer=_fake_heldout,
                 )
 
+    def test_outer_duration_normalizes_csv_and_numpy_scalars_without_weakening_checks(self):
+        self.assertEqual(scoring.normalize_outer_duration("4.25"), 4.25)
+        self.assertEqual(
+            scoring.normalize_outer_duration(np.float32(4.25)),
+            float(np.float32(4.25)),
+        )
+        self.assertIsInstance(scoring.normalize_outer_duration(np.int64(4)), float)
+        for value in (True, np.bool_(True), "nan", np.float32(np.inf), "-0.1", "not-a-number"):
+            with self.subTest(value=repr(value)):
+                with self.assertRaises(ValueError):
+                    scoring.normalize_outer_duration(value)
+
+    def test_outer_receipt_canonicalizes_numpy_duration_scalar(self):
+        original = self.contract
+        self.contract = _contract()
+        for row in self.contract["manifest"]:
+            row["duration_seconds"] = np.float32(4.25)
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                prepared = {outer: self._prepare(root, outer) for outer in (0, 1)}
+                all_reloads = scoring.reload_all_pretruth_seals(
+                    self.contract, scoring_spec=self.spec,
+                    policy_paths_by_outer={outer: root / f"policy-{outer}.json" for outer in (0, 1)},
+                    f005_source_receipt=self.source,
+                    f005_control_bindings_by_outer={outer: self._binding(outer) for outer in (0, 1)},
+                )
+                outer_rows = [
+                    {**row, "group_id": self.contract["folds"][index]["group_id"]}
+                    for index, row in enumerate(self.contract["manifest"])
+                    if self.contract["folds"][index]["fold"] == 0
+                ]
+                receipt = scoring.evaluate_outer_once(
+                    self.contract, prepared[0], all_reloads, outer_rows,
+                    self.contract["labels"], scoring_spec=self.spec,
+                    evaluation_path=root / "outer-numpy-duration.json",
+                )
+                self.assertTrue(all(
+                    type(row["duration_seconds"]) is float
+                    for row in receipt["outer_reference"]
+                ))
+        finally:
+            self.contract = original
+
     def test_module_is_pure_and_does_not_depend_on_outer_crossfit(self):
         source = inspect.getsource(scoring)
         self.assertNotIn("import torch", source)

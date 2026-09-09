@@ -31,6 +31,7 @@ from speaker_id.training.f008_scoring import (
     bind_authenticated_f005_control_embeddings,
     evaluate_outer_active_arms_once,
     normalize_scoring_spec,
+    normalize_outer_duration,
     rebuild_and_validate_pretruth_bundle,
     reload_all_pretruth_seals,
     scoring_spec_from_f008_config,
@@ -406,11 +407,13 @@ def materialize_outer_truth_rows(
                  "F008 E0 sealed outer metadata are malformed")
         name = public["audio_file"]
         source, fold, role = manifest_by_name.get(name), folds_by_name.get(name), roles_by_name.get(name)
+        _require(isinstance(source, Mapping) and isinstance(fold, Mapping) and isinstance(role, Mapping),
+                 "F008 E0 outer truth differs from its sealed public identity")
+        duration = normalize_outer_duration(source.get("duration_seconds"))
         _require(
-            isinstance(source, Mapping) and isinstance(fold, Mapping) and isinstance(role, Mapping)
-            and truth(role.get("outer_evaluation_included"))
+            truth(role.get("outer_evaluation_included"))
             and fold.get("group_id") == public.get("group_id")
-            and source.get("duration_seconds") == public.get("duration_seconds")
+            and duration == public.get("duration_seconds")
             and truth(source.get("has_nonzero_signal")) == public.get("has_nonzero_signal"),
             "F008 E0 outer truth differs from its sealed public identity",
         )
@@ -419,7 +422,7 @@ def materialize_outer_truth_rows(
                  "F008 E0 outer speaker label is outside the fixed label map")
         rows.append({
             "audio_file": name, "speaker_id": speaker, "group_id": fold["group_id"],
-            "duration_seconds": source["duration_seconds"],
+            "duration_seconds": duration,
             "has_nonzero_signal": source["has_nonzero_signal"],
         })
     return rows
@@ -468,12 +471,14 @@ def _outer_rows_for_receipt(
                  "F008 E0 outer reference row is malformed")
         name = row["audio_file"]
         source, fold, role = manifest.get(name), folds.get(name), roles.get(name)
+        _require(isinstance(source, Mapping) and isinstance(fold, Mapping) and isinstance(role, Mapping),
+                 "F008 E0 outer reference differs from immutable contract")
+        duration = normalize_outer_duration(source.get("duration_seconds"))
         _require(
-            name not in names and isinstance(source, Mapping) and isinstance(fold, Mapping)
-            and isinstance(role, Mapping) and truth(role.get("outer_evaluation_included"))
+            name not in names and truth(role.get("outer_evaluation_included"))
             and row.get("speaker_id") == source.get("speaker_id")
             and row.get("group_id") == fold.get("group_id")
-            and row.get("duration_seconds") == source.get("duration_seconds")
+            and row.get("duration_seconds") == duration
             and truth(row.get("has_nonzero_signal")) == truth(source.get("has_nonzero_signal")),
             "F008 E0 outer reference differs from immutable contract",
         )

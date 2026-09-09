@@ -234,6 +234,30 @@ class F008E0OuterEvaluationTests(unittest.TestCase):
             self.assertFalse(report["local_model_transfer"])
             self.assertTrue((output / "outer_evaluation_report.json").is_file())
 
+    def test_materialized_outer_rows_normalize_csv_duration_metadata(self) -> None:
+        original = self.contract
+        self.contract = _contract()
+        for row in self.contract["manifest"]:
+            row["duration_seconds"] = "4.25"
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                prepared = {outer: self._prepared(root, outer) for outer in (0, 1)}
+                output = root / "outer"
+                output.mkdir()
+                report, receipts = e0.evaluate_rebuilt_e0_outer(
+                    contract=self.contract, config=_config(), source_receipt=self.source,
+                    prepared=prepared, output_directory=output,
+                )
+                self.assertEqual(set(receipts), {0, 1})
+                self.assertEqual(report["metrics"]["control_f005"]["row_count"], 10)
+                self.assertTrue(all(
+                    type(row["duration_seconds"]) is float
+                    for receipt in receipts.values() for row in receipt["outer_reference"]
+                ))
+        finally:
+            self.contract = original
+
     def test_every_seal_must_reload_before_truth_provider_runs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
