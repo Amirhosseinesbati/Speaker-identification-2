@@ -353,7 +353,7 @@ def group_disjoint_frozen_winner_stability(
         # not mutate it, so make the small integer index buffer writable.
         torch.as_tensor(np.array(sampled.reshape(-1), copy=True), dtype=torch.long, device=device)
     ].reshape((*sampled.shape, references.shape[1]))
-    class_tensor = torch.as_tensor(class_labels, dtype=torch.long, device=device)
+    class_tensor = torch.as_tensor(np.array(class_labels, copy=True), dtype=torch.long, device=device)
     stability = np.zeros(len(queries), dtype=np.float64)
     positions = np.flatnonzero(known)
     with torch.no_grad():
