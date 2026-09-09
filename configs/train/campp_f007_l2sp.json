@@ -1,0 +1,103 @@
+{
+  "schema_version": 1,
+  "experiment_code": "F007",
+  "run_name": "F007-campp-advanced-l2sp-anchored-tail",
+  "hypothesis": "The F005 dual-AAM tail control nearly preserves C002b under the fixed historical diagnostic gate but loses performance with role-safe open-set calibration. Anchoring only trainable non-BatchNorm advanced-CAM++ encoder parameters to the authenticated F005 shared-head state may constrain harmful drift while preserving useful short/long adaptation.",
+  "source_f005": {
+    "run_dir": "/workspace/Speaker-identification-2-c002/artifacts/training/f005_consistency/F005_supervised_primary",
+    "parent_run_id": "5ad78a9dba1f4ab4a32783e445d91681",
+    "config_path": "configs/train/campp_f005_consistency.json",
+    "config_sha256": "2e1f83b01054d8eb7fd9c552cba3ff26c8852794de8dcee1d2820e4441221a0d",
+    "reuse_control": true,
+    "reuse_shared_head": true,
+    "required_selected_arm_by_outer_fold": {"0": "control", "1": "control"}
+  },
+  "output_root": "artifacts/training/f007_l2sp",
+  "seed": 20260909,
+  "fold_ids": [0, 1],
+  "device": "cuda",
+  "cpu_threads": 4,
+  "execution": {
+    "gpu_name_contains": "RTX 3090",
+    "tensor_dtype": "float32",
+    "no_cpu_fallback": true,
+    "deterministic_algorithms": "enforce_error",
+    "cublas_workspace_config": ":4096:8",
+    "thread_environment": {
+      "OPENBLAS_NUM_THREADS": "4",
+      "OMP_NUM_THREADS": "4",
+      "MKL_NUM_THREADS": "4"
+    }
+  },
+  "arms": [
+    {"id": "control_f005", "kind": "reused_f005_control", "lambda": 0.0},
+    {"id": "l2sp_001", "kind": "l2sp_anchored_tail", "lambda": 0.01},
+    {"id": "l2sp_01", "kind": "l2sp_anchored_tail", "lambda": 0.1}
+  ],
+  "l2sp": {
+    "formula": "lambda_times_half_sum_squared_distance",
+    "anchor_source": "authenticated_f005_shared_head_encoder_before_tail",
+    "anchor_scope": "trainable_encoder_parameters_excluding_batchnorm_affine",
+    "aam_head_included": false,
+    "batchnorm_affine_in_l2sp": false,
+    "batchnorm_affine_remains_task_trainable": true,
+    "probe": {
+      "kind": "virtual_task_step_then_gradient_ratio",
+      "task_only_virtual_step": 600,
+      "measurement_step": 601,
+      "optimizer_steps_persisted": 0,
+      "selects_lambda": false,
+      "expected_lambda_ratio": 10.0
+    }
+  },
+  "training": {
+    "reuse_f005_fit_rows": true,
+    "reuse_f005_nested_crop_plan": true,
+    "reuse_f005_tail_steps": 500,
+    "reuse_f005_optimizer_and_schedule": true,
+    "dynamic_consistency": false,
+    "raw_h_mse": false,
+    "tail_checkpoint_every_steps": 100,
+    "new_gpu_tail_jobs": 4
+  },
+  "selection": {
+    "known_query_scope": "original_group_disjoint_calibration_query_rows_only",
+    "metric": "known_query_macro_f1_over_observed_labels_then_top1_accuracy",
+    "arm_tie_order": ["control_f005", "l2sp_001", "l2sp_01"],
+    "unknown_calibration_hidden_until_arm_sealed": true,
+    "outer_labels_forbidden_until_all_policies_sealed": true,
+    "refit_after_selection": false
+  },
+  "scoring": {
+    "protocol": "c002b_family_disjoint_roles_v1",
+    "reference_method": "max_reference",
+    "fusion": "same_reference_sqrt_weighted_encoder_concatenation",
+    "alphas": [0.0, 0.25, 0.5, 0.75, 1.0],
+    "alpha_tie_order": [0.0, 1.0, 0.25, 0.5, 0.75],
+    "unknown_weights": [0.0, 0.25, 0.5, 0.75, 1.0],
+    "margin_weights": [0.0, 0.5],
+    "threshold_candidates": 201,
+    "probability_temperature": 0.05,
+    "historical_c002b_fixed_policy": "diagnostic_only_never_selectable"
+  },
+  "promotion": {
+    "goal_target_oof_macro_f1": 0.965,
+    "minimum_selected_delta_vs_reused_control": 0.003,
+    "minimum_selected_delta_vs_c002b": 0.003,
+    "minimum_accuracy_delta_vs_c002b": 0.0,
+    "minimum_short_known_top1_delta_vs_c002b": 0.0,
+    "minimum_each_fold_delta_vs_reused_control": -0.001,
+    "minimum_each_fold_delta_vs_c002b": -0.001,
+    "maximum_unknown_to_known_increase_vs_c002b": 2,
+    "maximum_known_to_other_known_increase_vs_c002b": 0,
+    "minimum_group_bootstrap_lower_bound_vs_reused_control": -0.0005,
+    "minimum_group_bootstrap_lower_bound_vs_c002b": -0.0005,
+    "require_exact_cpu_cuda_prediction_parity": true,
+    "all_conditions_required": true,
+    "otherwise": "retain_c002b"
+  },
+  "mlflow": {
+    "experiment_id": "1",
+    "upload": "configs_source_snapshot_receipts_seals_metrics_reports_only_no_audio_embeddings_weights_optimizer_or_credentials"
+  }
+}
