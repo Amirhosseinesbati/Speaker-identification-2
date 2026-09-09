@@ -813,6 +813,8 @@ def execute(root: Path, config_path: Path, binding_path: Path) -> dict:
             "children": {recipe: children[recipe]["tracker"].run_id for recipe in RECIPES},
             "results": {recipe: report["oof"] for recipe, report in reports.items()},
             "promotion": promotion, "source_binding": source_binding, "source_arrays_unchanged": True,
+            "children_mlflow_finished_and_verified": True,
+            "parent_pretermination_verified": False,
             "all_mlflow_finished_and_verified": False, "encoder_updates": 0,
             "embedding_artifacts_uploaded": False, "raw_audio_read": False,
             "elapsed_seconds": time.monotonic() - started,
@@ -833,26 +835,36 @@ def execute(root: Path, config_path: Path, binding_path: Path) -> dict:
             f"- {recipe}: OOF Macro-F1 {report['oof']['macro_f1']:.9f}; delta {report['oof_macro_f1_delta_vs_C002b']:+.9f}."
             for recipe, report in reports.items()) + f"\n\nPromotion gate passed: {promotion['passed']}. No local transfer was performed.\n")
         write_json(output / "tracking_pretermination_verification.json",
-                   {"status": "passed", "children": child_verification,
-                    "parent": "verified again immediately before FINISHED"})
+                   {"status": "ready_for_parent_verification", "children": child_verification,
+                    "parent": "all final artifacts are verified again immediately before FINISHED"})
         parent.add_artifact(output / "tracking_pretermination_verification.json")
-        parent_verification = _finish_verified(parent)
-        roundtrip = {"parent": parent_verification, "children": child_verification}
-        write_json(output / "tracking_roundtrip_verification.json", {"status": "passed", "runs": roundtrip})
-        final["all_mlflow_finished_and_verified"] = True
+        parent.flush(strict=True)
+        parent_pretermination = {
+            "artifacts": parent.verify_artifacts(),
+            "metadata": parent.verify_remote_metadata(),
+        }
+        final["parent_pretermination_verified"] = True
         write_json(output / "experiment_report.json", final)
+        write_json(output / "tracking_roundtrip_verification.json", {
+            "status": "ready_for_parent_termination",
+            "children": child_verification,
+            "parent_pretermination_before_final_receipts": parent_pretermination,
+            "completion_contract": (
+                "The parent is complete only when its remote MLflow status is FINISHED; "
+                "no normal artifacts or metrics are written after termination."
+            ),
+        })
         parent.write_report(final, markdown="# S017 nested open-set QMF\n\n" + "\n".join(
             f"- {recipe}: OOF Macro-F1 {report['oof']['macro_f1']:.9f}; delta {report['oof_macro_f1_delta_vs_C002b']:+.9f}."
-            for recipe, report in reports.items()) + f"\n\nPromotion gate passed: {promotion['passed']}. All five MLflow runs and tracked artifacts were read back successfully. No local transfer was performed.\n")
+            for recipe, report in reports.items()) + f"\n\nPromotion gate passed: {promotion['passed']}. All child runs are FINISHED; the parent is terminated only after final byte and metadata readback. No local transfer was performed.\n")
         parent.add_artifact(output / "experiment_report.json")
         parent.add_artifact(output / "tracking_roundtrip_verification.json")
-        try:
-            parent.flush(strict=True)
-            parent.verify_artifacts()
-            parent.verify_remote_metadata()
-        except BaseException as error:
-            _mark_postfinish_failure(parent, error)
-            raise
+        parent_verification = _finish_verified(parent)
+        roundtrip = {"parent": parent_verification, "children": child_verification}
+        final["all_mlflow_finished_and_verified"] = True
+        write_json(output / "experiment_report.json", final)
+        write_json(output / "tracking_terminal_verification.json", {"status": "passed", "runs": roundtrip,
+            "note": "Local terminal receipt; no MLflow writes occur after parent termination."})
         write_json(output / "experiment_state.json", {"status": "complete", "parent_run_id": parent.run_id,
             "children": final["children"], "all_mlflow_finished_and_verified": True,
             "postprocessor_training_started": True, "encoder_updates": 0,

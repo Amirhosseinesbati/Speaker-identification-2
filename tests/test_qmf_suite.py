@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import inspect
 import json
 from pathlib import Path
 import sys
@@ -45,6 +46,21 @@ class QmfSuiteTests(unittest.TestCase):
         self.assertFalse(observed["source_present_on_this_host"])
         self.assertFalse(observed["source_cache_transfer_required"])
         self.assertEqual(observed["local_transfer_policy"], "promotion_only")
+
+    def test_success_path_has_no_normal_mlflow_writes_after_parent_finish(self):
+        source = inspect.getsource(suite.execute)
+        marker = "parent_verification = _finish_verified(parent)"
+        self.assertEqual(source.count(marker), 1)
+        tail = source.split(marker, 1)[1].split("\n    except BaseException", 1)[0]
+        for forbidden in (
+            "parent.add_artifact(",
+            "parent.write_report(",
+            "parent.flush(",
+            "parent.log_metrics(",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, tail)
+        self.assertIn('tracking_terminal_verification.json', tail)
 
     def test_outer_label_masking_preserves_only_training_truth(self):
         contract = {
