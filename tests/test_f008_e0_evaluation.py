@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -382,6 +383,119 @@ class F008E0OuterEvaluationTests(unittest.TestCase):
             e0.validate_completed_e0_screen(
                 altered, f008_signature="a" * 64, f005_signature="b" * 64, fold_ids=[0, 1],
             )
+
+    def test_recovery_runtime_files_bind_cached_tail_to_both_receipts(self) -> None:
+        runtime_sha = "3" * 64
+        with tempfile.TemporaryDirectory() as directory:
+            failed = Path(directory) / "failed_e0"
+            recovery_root = failed / e0.E0_RECOVERY_VERSION
+            failed.mkdir()
+            recovery_root.mkdir()
+            summary = {
+                "schema_version": "f008-runtime-receipt-v1",
+                "receipt_sha256": runtime_sha,
+                "f008_signature": "a" * 64,
+                "source_f005_signature": "b" * 64,
+            }
+            failed_runtime = failed / "runtime_receipt.json"
+            fresh_runtime = recovery_root / "runtime_receipt.json"
+            failed_runtime.write_text(json.dumps(summary), encoding="utf-8")
+            fresh_runtime.write_text(json.dumps(summary), encoding="utf-8")
+            recovery = {
+                "failed_e0_directory_name": failed.name,
+                "failed_e0_runtime_summary_sha256": e0._sha256_file(failed_runtime),
+                "failed_e0_runtime_receipt_sha256": runtime_sha,
+                "fresh_runtime_receipt_sha256": runtime_sha,
+            }
+            hashes = e0._validated_recovery_runtime_hashes(
+                recovery_root, recovery=recovery, f008_signature="a" * 64,
+                f005_signature="b" * 64,
+            )
+            self.assertEqual(hashes, (runtime_sha, runtime_sha))
+            tail = {"runtime_receipt_sha256": runtime_sha}
+            checkpoint = {"signature": "4" * 64}
+            cache = {
+                "identity": {"signature": "5" * 64},
+                "receipt": {"receipt_sha256": "6" * 64},
+            }
+            fold_summary = {
+                "checkpoint_receipt_sha256": checkpoint["signature"],
+                "cache_receipt_sha256": cache["receipt"]["receipt_sha256"],
+            }
+            recovery.update({
+                "fold_0_reused_checkpoint_receipt_sha256": checkpoint["signature"],
+                "fold_0_reused_cache_identity_signature": cache["identity"]["signature"],
+                "fold_0_reused_cache_receipt_sha256": cache["receipt"]["receipt_sha256"],
+            })
+            e0._validate_recovery_cached_tail_runtime(
+                recovery=recovery, recovery_runtime_hashes=hashes, tail=tail,
+            )
+            e0._validate_recovery_fold0_reuse(
+                recovery=recovery, outer=0, checkpoint=checkpoint, cache=cache,
+                fold_summary=fold_summary,
+            )
+
+            wrong_fresh = copy.deepcopy(recovery)
+            wrong_fresh["fresh_runtime_receipt_sha256"] = "7" * 64
+            with self.assertRaises(ValueError):
+                e0._validate_recovery_cached_tail_runtime(
+                    recovery=wrong_fresh, recovery_runtime_hashes=(runtime_sha, "7" * 64), tail=tail,
+                )
+            wrong_failed = copy.deepcopy(recovery)
+            wrong_failed["failed_e0_runtime_receipt_sha256"] = "8" * 64
+            with self.assertRaises(ValueError):
+                e0._validate_recovery_cached_tail_runtime(
+                    recovery=wrong_failed, recovery_runtime_hashes=("8" * 64, runtime_sha), tail=tail,
+                )
+            fresh_runtime.write_text(json.dumps({
+                **summary, "receipt_sha256": "9" * 64,
+            }), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                e0._validated_recovery_runtime_hashes(
+                    recovery_root, recovery=recovery, f008_signature="a" * 64,
+                    f005_signature="b" * 64,
+                )
+
+    def test_recovery_fold_zero_reuse_fields_match_validated_cache_and_summary(self) -> None:
+        runtime_sha = "3" * 64
+        checkpoint = {"signature": "4" * 64}
+        cache = {
+            "identity": {"signature": "5" * 64},
+            "receipt": {"receipt_sha256": "6" * 64},
+        }
+        fold_summary = {
+            "checkpoint_receipt_sha256": checkpoint["signature"],
+            "cache_receipt_sha256": cache["receipt"]["receipt_sha256"],
+        }
+        recovery = {
+            "failed_e0_runtime_receipt_sha256": runtime_sha,
+            "fresh_runtime_receipt_sha256": runtime_sha,
+            "fold_0_reused_checkpoint_receipt_sha256": checkpoint["signature"],
+            "fold_0_reused_cache_identity_signature": cache["identity"]["signature"],
+            "fold_0_reused_cache_receipt_sha256": cache["receipt"]["receipt_sha256"],
+        }
+        arguments = {
+            "recovery": recovery,
+            "outer": 0,
+            "checkpoint": checkpoint,
+            "cache": cache,
+            "fold_summary": fold_summary,
+        }
+        e0._validate_recovery_fold0_reuse(**arguments)
+        for field, value in (
+            ("fold_0_reused_checkpoint_receipt_sha256", "7" * 64),
+            ("fold_0_reused_cache_identity_signature", "7" * 64),
+            ("fold_0_reused_cache_receipt_sha256", "7" * 64),
+        ):
+            changed = copy.deepcopy(arguments)
+            changed["recovery"][field] = value
+            with self.assertRaises(ValueError):
+                e0._validate_recovery_fold0_reuse(**changed)
+        for field in ("checkpoint_receipt_sha256", "cache_receipt_sha256"):
+            changed = copy.deepcopy(arguments)
+            changed["fold_summary"][field] = "7" * 64
+            with self.assertRaises(ValueError):
+                e0._validate_recovery_fold0_reuse(**changed)
 
 
 if __name__ == "__main__":

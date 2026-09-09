@@ -212,6 +212,96 @@ def _resolve_fold_artifact_directory(
     return _regular_directory_below(base, relative, "recovery energy fold directory")
 
 
+def _validated_recovery_runtime_hashes(
+        e0_directory: Path, *, recovery: Mapping[str, object],
+        f008_signature: str, f005_signature: str,
+) -> tuple[str, str]:
+    """Read both durable recovery runtime receipts before cache reuse.
+
+    The recovery declaration is not treated as the source of truth here: the
+    failed parent and fresh recovery summaries are read from their fixed,
+    confined locations.  Their receipt hashes are then compared with the
+    declaration before either cached fold can be scored.
+    """
+    root = Path(e0_directory).resolve(strict=True)
+    _require(
+        root.name == E0_RECOVERY_VERSION
+        and root.parent.is_dir() and not root.parent.is_symlink()
+        and root.parent.name == recovery.get("failed_e0_directory_name"),
+        "F008 E0 recovery runtime roots are not attached to the declared failed parent",
+    )
+    failed_path = _regular_below(root.parent, "runtime_receipt.json", "failed runtime receipt")
+    fresh_path = _regular_below(root, "runtime_receipt.json", "fresh recovery runtime receipt")
+    failed = _read_json(failed_path, "failed runtime receipt")
+    fresh = _read_json(fresh_path, "fresh recovery runtime receipt")
+    failed_hash = failed.get("receipt_sha256")
+    fresh_hash = fresh.get("receipt_sha256")
+    _require(
+        failed.get("schema_version") == "f008-runtime-receipt-v1"
+        and fresh.get("schema_version") == "f008-runtime-receipt-v1"
+        and failed.get("f008_signature") == f008_signature
+        and fresh.get("f008_signature") == f008_signature
+        and failed.get("source_f005_signature") == f005_signature
+        and fresh.get("source_f005_signature") == f005_signature
+        and _is_sha256(failed_hash) and _is_sha256(fresh_hash)
+        and failed_hash == recovery.get("failed_e0_runtime_receipt_sha256")
+        and fresh_hash == recovery.get("fresh_runtime_receipt_sha256")
+        and _sha256_file(failed_path) == recovery.get("failed_e0_runtime_summary_sha256"),
+        "F008 E0 recovery runtime receipts differ from the immutable recovery declaration",
+    )
+    return str(failed_hash), str(fresh_hash)
+
+
+def _validate_recovery_cached_tail_runtime(
+        *, recovery: Mapping[str, object] | None,
+        recovery_runtime_hashes: tuple[str, str] | None,
+        tail: Mapping[str, object],
+) -> None:
+    """Bind a cached tail to both independently read recovery runtimes."""
+    if recovery is None:
+        _require(recovery_runtime_hashes is None,
+                 "F008 E0 non-recovery cache unexpectedly has recovery runtime evidence")
+        return
+    _require(recovery_runtime_hashes is not None,
+             "F008 E0 recovery cache lacks independently read runtime evidence")
+    failed_runtime_hash, fresh_runtime_hash = recovery_runtime_hashes
+    tail_runtime_hash = tail.get("runtime_receipt_sha256")
+    _require(
+        _is_sha256(tail_runtime_hash)
+        and tail_runtime_hash == failed_runtime_hash
+        and tail_runtime_hash == fresh_runtime_hash
+        and tail_runtime_hash == recovery.get("failed_e0_runtime_receipt_sha256")
+        and tail_runtime_hash == recovery.get("fresh_runtime_receipt_sha256"),
+        "F008 E0 recovery cached tail belongs to another failed or fresh runtime receipt",
+    )
+
+
+def _validate_recovery_fold0_reuse(
+        *, recovery: Mapping[str, object] | None, outer: int,
+        checkpoint: Mapping[str, object], cache: Mapping[str, object],
+        fold_summary: Mapping[str, object],
+) -> None:
+    """Bind recovery's declared fold-0 reuse values to validated source/cache bytes."""
+    if recovery is None or outer != 0:
+        return
+    identity = cache.get("identity") if isinstance(cache, Mapping) else None
+    receipt = cache.get("receipt") if isinstance(cache, Mapping) else None
+    checkpoint_signature = checkpoint.get("signature")
+    cache_identity_signature = identity.get("signature") if isinstance(identity, Mapping) else None
+    cache_receipt_sha256 = receipt.get("receipt_sha256") if isinstance(receipt, Mapping) else None
+    _require(
+        _is_sha256(checkpoint_signature)
+        and _is_sha256(cache_identity_signature)
+        and _is_sha256(cache_receipt_sha256)
+        and recovery.get("fold_0_reused_checkpoint_receipt_sha256") == checkpoint_signature
+        and recovery.get("fold_0_reused_cache_identity_signature") == cache_identity_signature
+        and recovery.get("fold_0_reused_cache_receipt_sha256") == cache_receipt_sha256
+        and fold_summary.get("checkpoint_receipt_sha256") == checkpoint_signature
+        and fold_summary.get("cache_receipt_sha256") == cache_receipt_sha256,
+        "F008 E0 recovery fold 0 reuse declaration differs from validated checkpoint, cache, or fold summary",
+    )
+
+
 def validate_completed_e0_screen(
         screen: Mapping[str, object], *, f008_signature: str,
         f005_signature: str, fold_ids: Sequence[int],
@@ -322,6 +412,8 @@ def _load_energy_cache_and_control(
         f005_contract: Mapping[str, object], source_receipt: Mapping[str, object],
         source_root: Path, frozen_valid: np.ndarray,
         fold_summary: Mapping[str, object], frozen_receipt: Mapping[str, object],
+        recovery: Mapping[str, object] | None,
+        recovery_runtime_hashes: tuple[str, str] | None,
 ) -> tuple[np.ndarray, np.ndarray, dict[str, object], dict[str, object],
            dict[str, object], Path, dict[str, object]]:
     """Authenticate E0's persisted energy cache and F005 control cache in place."""
@@ -366,6 +458,9 @@ def _load_energy_cache_and_control(
         and tail["arm"].get("id") == "energy_005",
         "F008 E0 energy cache belongs to another arm, fold, or source",
     )
+    _validate_recovery_cached_tail_runtime(
+        recovery=recovery, recovery_runtime_hashes=recovery_runtime_hashes, tail=tail,
+    )
     plan = build_f008_advanced_cache_plan(
         tail, output_directory=fold_root, relative_cache_directory="full_scoring/energy_005",
         checkpoint_receipt=checkpoint, manifest=f005_contract["manifest"],
@@ -380,6 +475,10 @@ def _load_energy_cache_and_control(
         and cache["receipt"]["receipt_sha256"] == fold_summary["cache_receipt_sha256"]
         and checkpoint["signature"] == fold_summary["checkpoint_receipt_sha256"],
         "F008 E0 fold/report cache or checkpoint evidence changed",
+    )
+    _validate_recovery_fold0_reuse(
+        recovery=recovery, outer=outer, checkpoint=checkpoint, cache=cache,
+        fold_summary=fold_summary,
     )
     control = load_reused_f005_control_cache(
         tail, source_receipt, f005_run_directory=source_root,
@@ -434,6 +533,12 @@ def rebuild_e0_pretruth_bundles(
     active_spec = e0_active_scoring_spec(config)
     root = Path(e0_directory).resolve(strict=True)
     _require(root.is_dir() and not root.is_symlink(), "F008 E0 screen directory is unavailable")
+    recovery_runtime_hashes = (
+        _validated_recovery_runtime_hashes(
+            root, recovery=validated_screen["recovery"], f008_signature=f008_signature,
+            f005_signature=str(f005_contract["signature"]),
+        ) if validated_screen["recovery"] is not None else None
+    )
 
     from speaker_id.evaluation.scoring_bridge import _load_c002_identity_cache
 
@@ -455,6 +560,8 @@ def rebuild_e0_pretruth_bundles(
             source_root=source_root, frozen_valid=frozen_valid,
             fold_summary=validated_screen["folds_by_outer"][outer],
             frozen_receipt=frozen_receipt,
+            recovery=validated_screen["recovery"],
+            recovery_runtime_hashes=recovery_runtime_hashes,
         )
         rebuilt = rebuild_and_validate_pretruth_bundle(
             f005_contract, outer, public_embeddings=public,
