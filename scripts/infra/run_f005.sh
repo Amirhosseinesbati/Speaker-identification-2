@@ -8,4 +8,5 @@ export OMP_NUM_THREADS=4
 export MKL_NUM_THREADS=4
 
 cd /workspace/Speaker-identification-2-c002
-exec .venv/bin/python scripts/train_f005.py "$@"
+exec .venv/bin/python scripts/infra/with_project_env.py \
+    .venv/bin/python scripts/train_f005.py "$@"
