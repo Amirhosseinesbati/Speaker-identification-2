@@ -157,11 +157,19 @@ def _validate_role_scopes(readiness: dict, config: dict) -> dict:
     summaries = []
     for outer in config["fold_ids"]:
         rows = [row for row in readiness["roles"] if int(row["outer_fold"]) == outer]
-        fit = [row for row in rows if truth(row["encoder_fit_allowed"])]
+        # The authoritative role table exposes the generic encoder-fit scope,
+        # which also contains unknown-background rows.  F005 is supervised on
+        # the registered speaker labels only; unknown rows remain available to
+        # the later open-set calibration stage and must never receive an AAM
+        # target.
+        fit = [
+            row for row in rows
+            if truth(row["encoder_fit_allowed"]) and row["speaker_id"] in known
+        ]
         known_queries = [row for row in rows if truth(row["calibration_query"]) and row["speaker_id"] != "unknown"]
         unknown_queries = [row for row in rows if truth(row["calibration_query"]) and row["speaker_id"] == "unknown"]
         enrollment = [row for row in rows if truth(row["enrollment_allowed"])]
-        if (len(fit) != EXPECTED_FIT_ROWS[outer] or any(row["speaker_id"] == "unknown" for row in fit)
+        if (len(fit) != EXPECTED_FIT_ROWS[outer]
                 or set(row["speaker_id"] for row in fit) != known):
             raise ValueError("F005 fit-all rows differ from the authoritative known-only role scope")
         observed = set(row["speaker_id"] for row in known_queries)

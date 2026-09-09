@@ -50,6 +50,17 @@ def scoring_fixture():
 
 
 class F005RunnerTests(unittest.TestCase):
+    def test_fit_rows_excludes_generic_unknown_encoder_rows(self):
+        contract = small_planning_contract()
+        contract["roles"].append({
+            "audio_file": "unknown-fit.wav", "speaker_id": "unknown",
+            "group_id": "unknown-fit-group", "outer_fold": 0,
+            "encoder_fit_allowed": True,
+        })
+        rows = runner.fit_rows(contract, 0)
+        self.assertNotIn("unknown-fit.wav", {row["audio_file"] for row in rows})
+        self.assertEqual({row["speaker_id"] for row in rows}, set(contract["labels"][1:]))
+
     def test_all_arms_share_step_plan_and_head_then_fork_layout(self):
         contract = small_planning_contract()
         first = runner.training_step_plan(contract, 0, 600)

@@ -34,11 +34,16 @@ def fit_rows(contract: dict, outer: int) -> list[dict]:
     config, labels = contract["config"], contract["labels"]
     if type(outer) is not int or outer not in config["fold_ids"]:
         raise ValueError("F005 outer fold is not configured")
-    rows = [row for row in contract["roles"]
-            if int(row["outer_fold"]) == outer and truth(row["encoder_fit_allowed"])]
+    known = set(labels[1:])
+    rows = [
+        row for row in contract["roles"]
+        if int(row["outer_fold"]) == outer
+        and truth(row["encoder_fit_allowed"])
+        and row["speaker_id"] in known
+    ]
     names = [row["audio_file"] for row in rows]
-    if (not rows or len(names) != len(set(names)) or any(row["speaker_id"] == "unknown" for row in rows)
-            or set(row["speaker_id"] for row in rows) != set(labels[1:])):
+    if (not rows or len(names) != len(set(names))
+            or set(row["speaker_id"] for row in rows) != known):
         raise ValueError("F005 requires every known speaker and only permitted fit rows")
     return rows
 
