@@ -314,7 +314,14 @@ def select_qmf_threshold(
     quantiles: int = DEFAULT_THRESHOLD_QUANTILES,
     classes: int = 447,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """Select a meta-OOF threshold using only fixed guesses and binary logits."""
+    """Select a threshold within one declared fitting scope.
+
+    For nested validation, callers must pass only one case's fit logits,
+    labels, guesses, validity and baseline decisions.  The returned threshold
+    may then be applied to that case's untouched validation rows.  Calling
+    this primitive on pooled meta-OOF logits and scoring the same rows is an
+    invalid use and is intentionally not performed by policy selection.
+    """
     logits = np.asarray(known_logits, dtype=np.float64)
     target = np.asarray(truth)
     guess = np.asarray(known_guess)
@@ -350,6 +357,59 @@ def select_qmf_threshold(
     return dict(selected), curve
 
 
+def _nested_fold_fits(value: Any, assignments: np.ndarray) -> list[dict[str, Any]]:
+    """Validate provenance for three independently fit case thresholds.
+
+    This metadata is intentionally strict.  In particular, a threshold made
+    from pooled meta-OOF logits is not representable by this schema.  The
+    orchestration layer must fit both the logistic model and its threshold on
+    each case's ``fit`` rows, then apply both to that case's validation rows.
+    """
+    required = {
+        "heldout_meta_fold", "fit_meta_folds", "fit_rows", "validation_rows",
+        "threshold", "threshold_fit_scope",
+    }
+    _require(isinstance(value, list) and len(value) == META_FOLDS,
+             "QMF candidate needs exactly three case-fit threshold records")
+    result: list[dict[str, Any]] = []
+    for expected_fold, record in enumerate(value):
+        _require(isinstance(record, Mapping) and set(record) == required,
+                 "Malformed QMF case-fit threshold provenance")
+        heldout = record["heldout_meta_fold"]
+        fit_folds = record["fit_meta_folds"]
+        fit_rows = record["fit_rows"]
+        validation_rows = record["validation_rows"]
+        threshold = record["threshold"]
+        _require(type(heldout) is int and heldout == expected_fold,
+                 "QMF case-fit threshold records must be ordered meta folds 0, 1, 2")
+        _require(isinstance(fit_folds, list)
+                 and all(type(fold) is int for fold in fit_folds)
+                 and fit_folds == [fold for fold in range(META_FOLDS) if fold != heldout],
+                 "QMF case-fit folds must exclude exactly the held-out meta fold")
+        _require(type(fit_rows) is int and fit_rows > 0
+                 and type(validation_rows) is int
+                 and validation_rows == int(np.sum(assignments == heldout)),
+                 "QMF case-fit row counts are invalid")
+        _require(type(threshold) in (int, float) and not isinstance(threshold, bool)
+                 and np.isfinite(threshold), "QMF case-fit threshold must be finite")
+        _require(record["threshold_fit_scope"] == "case_fit_only",
+                 "QMF threshold must be selected only from the same case fit rows")
+        normalized = {
+            "heldout_meta_fold": heldout,
+            "fit_meta_folds": list(fit_folds),
+            "fit_rows": fit_rows,
+            "validation_rows": validation_rows,
+            "threshold": float(threshold),
+            "threshold_fit_scope": "case_fit_only",
+        }
+        try:
+            json.dumps(normalized, allow_nan=False, sort_keys=True)
+        except (TypeError, ValueError) as error:
+            raise ValueError("QMF case-fit provenance is not JSON-safe") from error
+        result.append(normalized)
+    return result
+
+
 def select_qmf_policy(
     truth: Any,
     known_guess: Any,
@@ -360,7 +420,14 @@ def select_qmf_policy(
     *,
     classes: int = 447,
 ) -> dict[str, Any]:
-    """Select baseline/score-only/quality policy with deterministic tie order."""
+    """Select a policy from fully nested, held-out case predictions.
+
+    This function deliberately accepts predictions instead of logits.  Each
+    candidate must already have fit its logistic model *and* threshold on each
+    case's fit rows and applied both to that case's untouched validation rows.
+    Consequently, neither validation truth nor validation-derived logits can
+    enter model fitting, scaling, threshold fitting, or policy calibration.
+    """
     target = np.asarray(truth)
     guess = np.asarray(known_guess)
     mask = np.asarray(valid)
@@ -387,7 +454,6 @@ def select_qmf_policy(
         "id": "baseline",
         "kind": "baseline",
         "feature_set": "baseline",
-        "threshold": None,
         "meta_macro_f1_447": baseline_f1,
         "meta_fold_macro_f1_447": baseline_fold_f1,
         "meta_gain": 0.0,
@@ -395,47 +461,61 @@ def select_qmf_policy(
         "eligible_for_selection": True,
         "changed_from_baseline": 0,
         "predictions": baseline.copy(),
-        "curve": [],
+        "fold_fits": [],
     }]
     observed_ids: set[str] = set()
     for position, candidate in enumerate(candidates):
-        _require(isinstance(candidate, Mapping) and set(candidate) == {"id", "feature_set", "known_logits"},
+        _require(isinstance(candidate, Mapping) and set(candidate) == {
+            "id", "feature_set", "crossfit_predictions", "fold_fits"
+        },
                  "Malformed QMF candidate")
         candidate_id, feature_set = candidate["id"], candidate["feature_set"]
         _require(type(candidate_id) is str and candidate_id and candidate_id != "baseline"
                  and candidate_id not in observed_ids, "QMF candidate IDs must be unique")
         _require(feature_set in FEATURE_SETS, "Unknown QMF feature set")
         observed_ids.add(candidate_id)
-        selected, curve = select_qmf_threshold(
-            candidate["known_logits"], target, guess, mask, baseline, classes=classes
-        )
-        predictions = np.where(mask & (np.asarray(candidate["known_logits"], dtype=np.float64)
-                                       > selected["threshold"]), guess, 0)
+        prediction = np.asarray(candidate["crossfit_predictions"])
+        _require(prediction.shape == target.shape and prediction.dtype.kind in "iu"
+                 and np.all((prediction >= 0) & (prediction < classes)),
+                 "QMF cross-fit predictions are malformed")
+        _require(np.all(prediction[~mask] == 0), "Invalid QMF rows must be unknown")
+        accepted = prediction != 0
+        _require(np.array_equal(prediction[accepted], guess[accepted]),
+                 "QMF may only accept or reject the fixed known winner")
+        fold_fits = _nested_fold_fits(candidate["fold_fits"], assigned)
+        pooled_f1 = macro_f1_indices(target, prediction, classes)
         fold_f1 = [
-            macro_f1_indices(target[assigned == fold], predictions[assigned == fold], classes)
+            macro_f1_indices(target[assigned == fold], prediction[assigned == fold], classes)
             for fold in range(META_FOLDS)
         ]
-        gain = selected["meta_macro_f1_447"] - baseline_f1
+        gain = pooled_f1 - baseline_f1
         fold_delta = [value - base for value, base in zip(fold_f1, baseline_fold_f1, strict=True)]
         rows.append({"id": candidate_id, "kind": "qmf", "feature_set": feature_set,
-                     "candidate_order": position, **selected,
-                     "meta_fold_macro_f1_447": fold_f1, "meta_gain": gain,
+                     "candidate_order": position,
+                     "meta_macro_f1_447": pooled_f1,
+                     "meta_fold_macro_f1_447": fold_f1,
+                     "meta_gain": gain,
                      "meta_fold_delta": fold_delta,
                      "eligible_for_selection": (gain >= META_MINIMUM_POOLED_GAIN
                                                 and min(fold_delta) >= -META_MAXIMUM_FOLD_LOSS),
-                     "predictions": predictions, "curve": curve})
+                     "changed_from_baseline": int(np.sum(prediction != baseline)),
+                     "predictions": prediction.copy(),
+                     "fold_fits": fold_fits,
+                     "threshold_protocol": "case_fit_logits_and_truth_apply_untouched_validation"})
 
     priority = {"baseline": 2, SCORE_ONLY: 1, SCORE_QUALITY: 0}
     eligible = [row for row in rows[1:] if row["eligible_for_selection"]]
     selected = max(eligible, key=lambda row: (
         row["meta_macro_f1_447"], priority[row["feature_set"]],
-        -row["changed_from_baseline"],
-        row["threshold"] if row["threshold"] is not None else float("inf"),
-        row["id"],
+        -row["changed_from_baseline"], -row["candidate_order"],
     )) if eligible else rows[0]
     return {"selected": selected, "candidates": rows,
             "tie_order": ["baseline", SCORE_ONLY, SCORE_QUALITY],
             "minimum_pooled_meta_gain": META_MINIMUM_POOLED_GAIN,
             "maximum_meta_fold_loss": META_MAXIMUM_FOLD_LOSS,
             "baseline_fallback": not bool(eligible),
+            "selection_predictions_fully_nested": True,
+            "case_threshold_fit_scope": "case_fit_only",
+            "final_threshold_required_after_policy_selection": True,
+            "outer_threshold_fit_scope": "full_inner_fit_logits_and_truth_after_recipe_selection",
             "outer_labels_used": False}

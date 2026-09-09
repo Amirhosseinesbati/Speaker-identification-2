@@ -26,13 +26,23 @@ class QmfSuiteTests(unittest.TestCase):
     def test_config_pins_source_features_nested_gate_promotion_and_retention(self):
         suite.validate_config(self.config)
         edits = [
+            lambda value: value.update(schema_version=True),
             lambda value: value["source"]["artifacts"]["identity_cache_manifest"].update(sha256="0" * 64),
+            lambda value: value["source"].update(unregistered_source_field=True),
+            lambda value: value["source"].update(encoder_updates=False),
             lambda value: value["feature_sets"]["scores_only"].reverse(),
             lambda value: value["logistic"].update(l2_penalty=.01),
             lambda value: value["nested_validation"].update(meta_assignment_salt="new-split"),
+            lambda value: value["nested_validation"].update(meta_folds=3.0),
+            lambda value: value["nested_validation"].update(threshold_fit_protocol="pooled_meta_oof"),
+            lambda value: value["nested_validation"]["full_chain_group_exclusion"].reverse(),
+            lambda value: value["nested_validation"]["full_chain_group_exclusion"].append("logistic_fit"),
             lambda value: value["nested_validation"].update(minimum_pooled_meta_gain=0.0),
             lambda value: value["promotion"].update(minimum_pooled_macro_f1_delta=0.0),
+            lambda value: value.update(selection_policy="drifted"),
+            lambda value: value["mlflow"]["upload"].append("embedding_cache"),
             lambda value: value["retention"].update(local_transfer="always"),
+            lambda value: value["limitations"].append("silent drift"),
         ]
         for edit in edits:
             changed = deepcopy(self.config)
@@ -40,10 +50,11 @@ class QmfSuiteTests(unittest.TestCase):
             with self.subTest(edit=edit), self.assertRaises(ValueError):
                 suite.validate_config(changed)
 
-    def test_validate_is_read_only_when_server_cache_is_absent(self):
+    def test_validate_is_read_only_and_reports_host_source_presence(self):
         observed = suite.validate(ROOT, Path("configs/postprocessing/campp_s017_qmf.json"))
         self.assertEqual(observed["status"], "validated_no_experiment_started")
-        self.assertFalse(observed["source_present_on_this_host"])
+        expected_presence = Path(self.config["source"]["run_dir"]).is_dir()
+        self.assertEqual(observed["source_present_on_this_host"], expected_presence)
         self.assertFalse(observed["source_cache_transfer_required"])
         self.assertEqual(observed["local_transfer_policy"], "promotion_only")
 
@@ -61,6 +72,46 @@ class QmfSuiteTests(unittest.TestCase):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, tail)
         self.assertIn('tracking_terminal_verification.json', tail)
+
+    def test_meta_model_and_threshold_are_invariant_to_validation_truth(self):
+        feature_names = list(suite.FEATURE_NAMES)
+        fit_count, validation_count = 12, 3
+        fit_features = np.zeros((fit_count, len(feature_names)), dtype=np.float64)
+        fit_features[:, feature_names.index("fused_known_top")] = np.linspace(-2.0, 2.0, fit_count)
+        validation_features = np.zeros((validation_count, len(feature_names)), dtype=np.float64)
+        validation_features[:, feature_names.index("fused_known_top")] = [-1.5, 0.0, 1.5]
+        fit_truth = np.asarray([0] * 6 + [1] * 6, dtype=np.int64)
+        known_scores = np.zeros((validation_count, 446), dtype=np.float32)
+        known_scores[:, 0] = 1.0
+        case = {
+            "fit": {
+                "features": fit_features,
+                "feature_names": feature_names,
+                "truth": fit_truth,
+                "guess": np.ones(fit_count, dtype=np.int64),
+                "valid": np.ones(fit_count, dtype=bool),
+                "margin": np.where(fit_truth == 0, -1.0, 1.0),
+                "groups": np.asarray([f"fit-{index}" for index in range(fit_count)]),
+            },
+            "validation": {
+                "features": validation_features,
+                "feature_names": feature_names,
+                "truth": np.asarray([0, 1, 1], dtype=np.int64),
+                "guess": np.ones(validation_count, dtype=np.int64),
+                "valid": np.ones(validation_count, dtype=bool),
+                "margin": np.asarray([-1.0, -1.0, 1.0]),
+                "known_scores": known_scores,
+            },
+        }
+        first = suite._fit_meta_qmf_case(case, "scores_only")
+        perturbed = deepcopy(case)
+        perturbed["validation"]["truth"] = np.asarray([446, 0, 446], dtype=np.int64)
+        second = suite._fit_meta_qmf_case(perturbed, "scores_only")
+        self.assertEqual(first["model"], second["model"])
+        self.assertEqual(first["threshold"], second["threshold"])
+        self.assertEqual(first["threshold_curve_sha256"], second["threshold_curve_sha256"])
+        np.testing.assert_array_equal(first["validation_logits"], second["validation_logits"])
+        np.testing.assert_array_equal(first["validation_predictions"], second["validation_predictions"])
 
     def test_outer_label_masking_preserves_only_training_truth(self):
         contract = {

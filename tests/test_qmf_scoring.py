@@ -23,6 +23,20 @@ from speaker_id.postprocessing.qmf_scoring import (
 )
 
 
+def _case_fit_records(assignments, thresholds=(-0.2, 0.0, 0.2)):
+    return [
+        {
+            "heldout_meta_fold": fold,
+            "fit_meta_folds": [other for other in range(3) if other != fold],
+            "fit_rows": 10 + fold,
+            "validation_rows": int(np.sum(assignments == fold)),
+            "threshold": threshold,
+            "threshold_fit_scope": "case_fit_only",
+        }
+        for fold, threshold in enumerate(thresholds)
+    ]
+
+
 class QmfScoringTests(unittest.TestCase):
     def test_direct_is_known_target_and_group_equal_binary_balance(self):
         truth = np.asarray([0, 0, 0, 0, 1, 1, 2], dtype=np.int64)
@@ -131,23 +145,29 @@ class QmfScoringTests(unittest.TestCase):
         valid = np.ones(6, dtype=bool)
         assignments = np.asarray([0, 0, 1, 1, 2, 2], dtype=np.int64)
         perfect = np.asarray([0, 1, 2, 0, 1, 2], dtype=np.int64)
-        logits = np.asarray([-1.0, 1.0, 1.0, -1.0, 1.0, 1.0])
         tied = select_qmf_policy(truth, guess, valid, perfect, assignments, [
-            {"id": "quality", "feature_set": SCORE_QUALITY, "known_logits": logits},
-            {"id": "scores", "feature_set": SCORE_ONLY, "known_logits": logits},
+            {"id": "quality", "feature_set": SCORE_QUALITY,
+             "crossfit_predictions": perfect, "fold_fits": _case_fit_records(assignments)},
+            {"id": "scores", "feature_set": SCORE_ONLY,
+             "crossfit_predictions": perfect, "fold_fits": _case_fit_records(assignments)},
         ], classes=3)
         self.assertEqual(tied["selected"]["id"], "baseline")
         self.assertTrue(tied["baseline_fallback"])
 
         imperfect = np.asarray([1, 0, 2, 2, 0, 2], dtype=np.int64)
         improved = select_qmf_policy(truth, guess, valid, imperfect, assignments, [
-            {"id": "quality", "feature_set": SCORE_QUALITY, "known_logits": logits},
-            {"id": "scores", "feature_set": SCORE_ONLY, "known_logits": logits},
+            {"id": "quality", "feature_set": SCORE_QUALITY,
+             "crossfit_predictions": perfect, "fold_fits": _case_fit_records(assignments)},
+            {"id": "scores", "feature_set": SCORE_ONLY,
+             "crossfit_predictions": perfect, "fold_fits": _case_fit_records(assignments)},
         ], classes=3)
         self.assertEqual(improved["selected"]["id"], "scores")
         self.assertFalse(improved["baseline_fallback"])
         self.assertEqual(improved["tie_order"], ["baseline", SCORE_ONLY, SCORE_QUALITY])
         self.assertEqual(len(improved["selected"]["meta_fold_macro_f1_447"]), 3)
+        self.assertTrue(improved["selection_predictions_fully_nested"])
+        self.assertTrue(improved["final_threshold_required_after_policy_selection"])
+        self.assertNotIn("threshold", improved["selected"])
 
     def test_policy_falls_back_when_a_candidate_fails_one_meta_fold(self):
         per_fold = np.tile(np.asarray([0, 1, 2], dtype=np.int64), 10)
@@ -160,16 +180,91 @@ class QmfScoringTests(unittest.TestCase):
         # mistake is introduced in fold two.  The candidate wins pooled but
         # must still fail the explicit per-fold robustness gate.
         baseline[[0, 1, 2, 30, 31, 32]] = [1, 0, 0, 1, 0, 0]
-        logits = np.where(truth == 0, -1.0, 1.0)
-        logits[60] = 1.0
+        prediction = truth.copy()
+        prediction[60] = guess[60]
         result = select_qmf_policy(truth, guess, valid, baseline, assignments, [
-            {"id": "unstable", "feature_set": SCORE_ONLY, "known_logits": logits},
+            {"id": "unstable", "feature_set": SCORE_ONLY,
+             "crossfit_predictions": prediction, "fold_fits": _case_fit_records(assignments)},
         ], classes=3)
         self.assertEqual(result["selected"]["id"], "baseline")
         self.assertTrue(result["baseline_fallback"])
         self.assertFalse(result["candidates"][1]["eligible_for_selection"])
         self.assertGreater(result["candidates"][1]["meta_gain"], 0.001)
         self.assertLess(result["candidates"][1]["meta_fold_delta"][2], -0.002)
+
+    def test_policy_rejects_logits_and_requires_case_fit_threshold_provenance(self):
+        truth = np.asarray([0, 1, 0, 1, 0, 1], dtype=np.int64)
+        guess = np.ones(6, dtype=np.int64)
+        valid = np.ones(6, dtype=bool)
+        assignments = np.asarray([0, 0, 1, 1, 2, 2], dtype=np.int64)
+        baseline = truth.copy()
+        with self.assertRaisesRegex(ValueError, "Malformed QMF candidate"):
+            select_qmf_policy(truth, guess, valid, baseline, assignments, [{
+                "id": "unsafe", "feature_set": SCORE_ONLY,
+                "known_logits": np.asarray([-1.0, 1.0] * 3),
+            }], classes=3)
+        provenance = _case_fit_records(assignments)
+        provenance[1]["threshold_fit_scope"] = "pooled_meta_oof"
+        with self.assertRaisesRegex(ValueError, "same case fit rows"):
+            select_qmf_policy(truth, guess, valid, baseline, assignments, [{
+                "id": "unsafe", "feature_set": SCORE_ONLY,
+                "crossfit_predictions": truth, "fold_fits": provenance,
+            }], classes=3)
+
+    def test_policy_rejects_reordered_winner_and_nonunknown_invalid_row(self):
+        truth = np.asarray([0, 1, 2, 0, 1, 2], dtype=np.int64)
+        guess = np.asarray([1, 1, 2, 1, 1, 2], dtype=np.int64)
+        valid = np.ones(6, dtype=bool)
+        assignments = np.asarray([0, 0, 1, 1, 2, 2], dtype=np.int64)
+        baseline = truth.copy()
+        reordered = truth.copy()
+        reordered[1] = 2
+        with self.assertRaisesRegex(ValueError, "fixed known winner"):
+            select_qmf_policy(truth, guess, valid, baseline, assignments, [{
+                "id": "reordered", "feature_set": SCORE_ONLY,
+                "crossfit_predictions": reordered, "fold_fits": _case_fit_records(assignments),
+            }], classes=3)
+        invalid = valid.copy()
+        invalid[1] = False
+        invalid_baseline = baseline.copy()
+        invalid_baseline[1] = 0
+        bad_invalid = truth.copy()
+        with self.assertRaisesRegex(ValueError, "Invalid QMF rows"):
+            select_qmf_policy(truth, guess, invalid, invalid_baseline, assignments, [{
+                "id": "invalid", "feature_set": SCORE_ONLY,
+                "crossfit_predictions": bad_invalid, "fold_fits": _case_fit_records(assignments),
+            }], classes=3)
+
+    def test_case_fit_model_and_threshold_are_independent_of_validation_truth(self):
+        primary = np.asarray([-2.0, -1.0, -0.5, 0.5, 1.0, 2.0])
+        fit_x = np.column_stack((primary, *[np.zeros(len(primary))
+                                            for _ in SCORE_ONLY_FEATURE_ORDER[1:]]))
+        fit_truth = np.asarray([0, 0, 0, 1, 1, 2], dtype=np.int64)
+        fit_guess = np.asarray([1, 1, 2, 1, 1, 2], dtype=np.int64)
+        fit_valid = np.ones(len(fit_truth), dtype=bool)
+        fit_baseline = np.where(primary > 0, fit_guess, 0)
+        model = fit_qmf_logistic(
+            fit_x, is_known_targets(fit_truth, classes=3),
+            np.asarray([f"fit-{index}" for index in range(len(fit_truth))]),
+            SCORE_ONLY_FEATURE_ORDER,
+        )
+        fit_logits = predict_qmf_logit(fit_x, model, feature_order=SCORE_ONLY_FEATURE_ORDER)
+        selected, _ = select_qmf_threshold(
+            fit_logits, fit_truth, fit_guess, fit_valid, fit_baseline, classes=3,
+        )
+        validation_x = np.zeros((2, len(SCORE_ONLY_FEATURE_ORDER)), dtype=np.float64)
+        validation_x[:, 0] = [-0.75, 0.75]
+        validation_scores = np.asarray([[0.8, 0.2], [0.1, 0.9]])
+        validation_logits = predict_qmf_logit(
+            validation_x, model, feature_order=SCORE_ONLY_FEATURE_ORDER,
+        )
+        first = qmf_decisions(validation_scores, validation_logits,
+                              selected["threshold"], np.ones(2, dtype=bool))
+        poisoned_validation_truth = np.asarray([2, 0], dtype=np.int64)
+        self.assertFalse(np.array_equal(poisoned_validation_truth, first))
+        second = qmf_decisions(validation_scores, validation_logits,
+                               selected["threshold"], np.ones(2, dtype=bool))
+        np.testing.assert_array_equal(first, second)
 
     def test_model_schema_rejects_boolean_version_and_feature_set_drift(self):
         x = np.zeros((2, len(SCORE_ONLY_FEATURE_ORDER)), dtype=np.float64)

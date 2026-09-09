@@ -109,6 +109,8 @@
     "meta_assignment_salt": "S012-nested-gallery-v1",
     "assignment_unit": "whole_content_group",
     "threshold_quantiles": 201,
+    "threshold_fit_protocol": "fit_on_same_meta_training_rows_as_logistic_then_apply_once_to_disjoint_meta_validation",
+    "deployment_threshold_refit": "fit_on_full_inner_logits_from_full_inner_logistic_after_recipe_selection",
     "selection_metric": "macro_f1_447",
     "candidate_tie_order": [
       "baseline",
@@ -156,7 +158,7 @@
     "all_conditions_required": true,
     "otherwise": "baseline"
   },
-  "selection_policy": "Evaluate only baseline, qmf_scores and qmf_scores_quality. Generate every meta-validation score with the complete validation content group absent from model fitting, feature scaling, known gallery, unknown cohort and baseline calibration. Select one policy and its 201-quantile threshold from grouped meta-OOF predictions, seal it before reading either outer fold label, then refit on permitted outer-training rows and evaluate each outer fold once. Failure of any promotion condition retains C002b exactly.",
+  "selection_policy": "Evaluate only baseline, qmf_scores and qmf_scores_quality. In each meta fold, exclude the complete validation content group from model fitting, feature scaling, known gallery, unknown cohort, baseline calibration and threshold selection; fit both the logistic model and its 201-quantile threshold on that case's fit rows, then apply them once to the disjoint validation rows. Select the recipe from pooled held-out meta predictions. After recipe assessment, refit each full-inner model and its threshold on full-inner training rows, seal every policy before reading either outer-fold label, and evaluate each outer fold once. Failure of any promotion condition retains C002b exactly.",
   "mlflow": {
     "experiment_id": "1",
     "upload": [
@@ -195,6 +197,7 @@
     "Quality metadata must reproduce the original-rate channel-mean duration and RMS definitions exactly in any promoted offline package.",
     "A promotion-gate pass authorizes only construction and verification of a release candidate; it does not establish leaderboard improvement.",
     "The two outer folds may select different QMF variants or thresholds; their OOF models are evaluation artifacts, not a directly deployable final model. A promoted release requires a fresh all-training nested selection and refit.",
-    "The true-class-stratified grouped bootstrap is a paired stability diagnostic conditional on the observed 447 classes, not a complete confidence interval for hidden-distribution generalization."
+    "The true-class-stratified grouped bootstrap is a paired stability diagnostic conditional on the observed 447 classes, not a complete confidence interval for hidden-distribution generalization.",
+    "Each threshold is fitted on in-sample logits from the same training-only logistic fit; held-out meta and outer evaluation measure the generalization of that mirrored procedure."
   ]
 }

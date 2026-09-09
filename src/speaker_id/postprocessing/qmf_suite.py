@@ -38,9 +38,11 @@ from speaker_id.postprocessing.qmf_scoring import (
     fit_qmf_logistic,
     is_known_targets,
     predict_qmf_logit,
+    qmf_decisions,
     qmf_feature_view,
     qmf_probabilities,
     select_qmf_policy,
+    select_qmf_threshold,
 )
 from speaker_id.postprocessing.scoring import prepare_fold, select_baseline
 from speaker_id.tracking.snapshot import git_provenance
@@ -102,19 +104,59 @@ SOURCE_ARTIFACTS = {
     "c002b_fold0_probabilities": ("C002b/fold_0/outer_probabilities.npz", "bdb53df3792e9305b9a9eac6dd1b0f335a597b26b96a61ccd90ae5760685600a"),
     "c002b_fold1_probabilities": ("C002b/fold_1/outer_probabilities.npz", "d08a211d42df193af367019859ccbd8792a8d41f079a576a0591006e069fcfdc"),
 }
+THRESHOLD_FIT_PROTOCOL = "fit_on_same_meta_training_rows_as_logistic_then_apply_once_to_disjoint_meta_validation"
+DEPLOYMENT_THRESHOLD_REFIT = "fit_on_full_inner_logits_from_full_inner_logistic_after_recipe_selection"
+SELECTION_POLICY = (
+    "Evaluate only baseline, qmf_scores and qmf_scores_quality. In each meta fold, exclude the complete "
+    "validation content group from model fitting, feature scaling, known gallery, unknown cohort, baseline "
+    "calibration and threshold selection; fit both the logistic model and its 201-quantile threshold on that "
+    "case's fit rows, then apply them once to the disjoint validation rows. Select the recipe from pooled "
+    "held-out meta predictions. After recipe assessment, refit each full-inner model and its threshold on "
+    "full-inner training rows, seal every policy before reading either outer-fold label, and evaluate each outer "
+    "fold once. Failure of any promotion condition retains C002b exactly."
+)
+MLFLOW_POLICY = {
+    "experiment_id": "1",
+    "upload": ["resolved_config", "source_hashes", "src_snapshot", "scalar_metrics", "reports",
+               "json_qmf_models", "predictions_and_bootstrap_receipts"],
+    "forbidden": ["raw_audio", "embeddings", "model_weights", "credentials"],
+}
+RETENTION_POLICY = {
+    "local_transfer": "promotion_only",
+    "keep_server_only_without_promotion": [
+        "embedding_cache", "fitted_qmf_models", "run_directory", "intermediate_arrays",
+    ],
+    "transfer_after_promotion": [
+        "resolved_config", "hash_and_verification_receipt", "minimal_offline_leaderboard_package",
+    ],
+}
 LIMITATIONS = [
-    "Repeated development OOF is not an untouched test or hidden-leaderboard estimate.",
-    "QMF only accepts or rejects the fixed best known identity; it cannot repair known-to-known ranking.",
-    "Every meta-validation content group is absent from gallery, background cohort, baseline fitting, scaling and logistic fitting.",
-    "Only two preregistered feature sets and one fixed L2 penalty are evaluated.",
-    "No raw audio, embeddings, model weights or credentials are uploaded to MLflow.",
-    "No server artifact is transferred to the local workstation unless the final promotion gate passes.",
+    "QMF changes only known-versus-unknown acceptance and never reorders known identities.",
+    "The same development OOF population has been examined repeatedly and is not an untouched test or a hidden-leaderboard estimate.",
+    "Quality metadata must reproduce the original-rate channel-mean duration and RMS definitions exactly in any promoted offline package.",
+    "A promotion-gate pass authorizes only construction and verification of a release candidate; it does not establish leaderboard improvement.",
+    "The two outer folds may select different QMF variants or thresholds; their OOF models are evaluation artifacts, not a directly deployable final model. A promoted release requires a fresh all-training nested selection and refit.",
+    "The true-class-stratified grouped bootstrap is a paired stability diagnostic conditional on the observed 447 classes, not a complete confidence interval for hidden-distribution generalization.",
+    "Each threshold is fitted on in-sample logits from the same training-only logistic fit; held-out meta and outer evaluation measure the generalization of that mirrored procedure.",
 ]
 
 
 def _require(condition, message):
     if not condition:
         raise ValueError(message)
+
+
+def _json_exact(actual, expected) -> bool:
+    """Compare JSON values without Python's bool/int or int/float coercion."""
+    if type(actual) is not type(expected):
+        return False
+    if isinstance(expected, dict):
+        return set(actual) == set(expected) and all(_json_exact(actual[key], value) for key, value in expected.items())
+    if isinstance(expected, list):
+        return len(actual) == len(expected) and all(
+            _json_exact(left, right) for left, right in zip(actual, expected, strict=True)
+        )
+    return actual == expected
 
 
 def _json(path: Path) -> dict:
@@ -163,16 +205,21 @@ def validate_config(config: dict) -> None:
         "bootstrap", "promotion", "selection_policy", "mlflow", "retention", "limitations",
     }
     _require(isinstance(config, dict) and set(config) == top, "Incomplete or extra S017 configuration")
-    _require(config["schema_version"] == 1 and config["experiment_code"] == "S017"
+    _require(type(config["schema_version"]) is int and config["schema_version"] == 1
+             and config["experiment_code"] == "S017"
              and config["run_name"] == "S017-c002b-nested-open-set-qmf"
              and config["output_root"] == "artifacts/training/qmf_s017",
              "S017 experiment identity changed")
     source = config["source"]
-    _require(source.get("run_dir") == RUN_DIR and source.get("parent_run_id") == SOURCE_PARENT
+    _require(set(source) == {"run_dir", "parent_run_id", "child_run_id", "recipe", "recipe_identity",
+              "git_commit", "artifacts", "embedding_cache", "read_only", "encoder_updates",
+              "fresh_audio_extraction"}
+             and source.get("run_dir") == RUN_DIR and source.get("parent_run_id") == SOURCE_PARENT
              and source.get("child_run_id") == SOURCE_CHILD and source.get("recipe") == "C002b"
              and source.get("recipe_identity") == "C002b_fresh_cuda_identity"
              and source.get("git_commit") == SOURCE_COMMIT and source.get("embedding_cache") == "identity_embedding_cache"
-             and source.get("read_only") is True and source.get("encoder_updates") == 0
+             and source.get("read_only") is True and type(source.get("encoder_updates")) is int
+             and source.get("encoder_updates") == 0
              and source.get("fresh_audio_extraction") is False,
              "C002b source binding changed")
     artifacts = source.get("artifacts")
@@ -188,15 +235,23 @@ def validate_config(config: dict) -> None:
     ]
     _require(config["candidates"] == expected_candidates and config["feature_sets"] == FEATURE_SETS,
              "S017 candidate or feature grid changed")
-    _require(config["logistic"] == {
+    _require(_json_exact(config["logistic"], {
         "target": "is_known", "l2_penalty": DEFAULT_L2_PENALTY,
         "scale_floor": DEFAULT_SCALE_FLOOR, "weighting": "group_equal_then_binary_balanced",
         "solver": "scipy_L-BFGS-B", "model_format": "finite_json_coefficients_numpy_inference",
-    }, "S017 logistic contract changed")
+    }), "S017 logistic contract changed")
     nested = config["nested_validation"]
-    _require(nested.get("meta_folds") == META_FOLDS and nested.get("meta_assignment_salt") == META_SALT
+    _require(set(nested) == {"meta_folds", "meta_assignment_salt", "assignment_unit", "threshold_quantiles",
+              "threshold_fit_protocol", "deployment_threshold_refit", "selection_metric",
+              "candidate_tie_order", "full_chain_group_exclusion", "outer_labels_forbidden_until_policy_sealed",
+              "minimum_pooled_meta_gain", "maximum_meta_fold_loss", "otherwise"}
+             and type(nested.get("meta_folds")) is int and nested.get("meta_folds") == META_FOLDS
+             and nested.get("meta_assignment_salt") == META_SALT
              and nested.get("assignment_unit") == "whole_content_group"
+             and type(nested.get("threshold_quantiles")) is int
              and nested.get("threshold_quantiles") == DEFAULT_THRESHOLD_QUANTILES
+             and nested.get("threshold_fit_protocol") == THRESHOLD_FIT_PROTOCOL
+             and nested.get("deployment_threshold_refit") == DEPLOYMENT_THRESHOLD_REFIT
              and nested.get("selection_metric") == "macro_f1_447"
              and nested.get("candidate_tie_order") == ["baseline", "qmf_scores", "qmf_scores_quality"]
              and nested.get("minimum_pooled_meta_gain") == META_MINIMUM_POOLED_GAIN
@@ -204,32 +259,32 @@ def validate_config(config: dict) -> None:
              and nested.get("otherwise") == "baseline"
              and nested.get("outer_labels_forbidden_until_policy_sealed") is True,
              "S017 nested-selection contract changed")
-    _require(set(nested.get("full_chain_group_exclusion", [])) == {
+    _require(nested.get("full_chain_group_exclusion") == [
         "logistic_fit", "feature_standardization", "known_reference_gallery", "unknown_reference_cohort",
         "baseline_calibration", "threshold_selection",
-    }, "S017 full nested exclusion scope changed")
+    ], "S017 full nested exclusion scope or order changed")
     execution = config["execution"]
-    _require(execution == {"qmf_device": "cpu", "cpu_threads": 4, "source_cache_read_only": True,
+    _require(_json_exact(execution, {"qmf_device": "cpu", "cpu_threads": 4, "source_cache_read_only": True,
         "no_encoder_forward": True, "no_encoder_updates": True, "no_audio_loading": True,
-        "no_test_transduction": True}, "S017 execution policy changed")
-    _require(config["probability_temperature"] == DEFAULT_TEMPERATURE,
+        "no_test_transduction": True}), "S017 execution policy changed")
+    _require(type(config["probability_temperature"]) is float
+             and config["probability_temperature"] == DEFAULT_TEMPERATURE,
              "S017 probability temperature changed")
     bootstrap = config["bootstrap"]
-    _require(bootstrap == {"kind": "paired_true_class_stratified_content_group", "seed": 20260909,
-        "replicates": 5000, "lower_quantile": .025, "upper_quantile": .975},
+    _require(_json_exact(bootstrap, {"kind": "paired_true_class_stratified_content_group", "seed": 20260909,
+        "replicates": 5000, "lower_quantile": .025, "upper_quantile": .975}),
         "S017 bootstrap contract changed")
     promotion = config["promotion"]
-    _require(promotion == {"minimum_pooled_macro_f1_delta": .0015,
+    _require(_json_exact(promotion, {"minimum_pooled_macro_f1_delta": .0015,
         "minimum_each_fold_macro_f1_delta": 0.0, "minimum_pooled_accuracy_delta": 0.0,
         "maximum_unknown_to_known_increase": 2, "maximum_known_to_other_known_increase": 0,
         "minimum_bootstrap_lower_bound": -.001, "require_exact_cpu_cuda_prediction_parity": True,
-        "all_conditions_required": True, "otherwise": "baseline"},
+        "all_conditions_required": True, "otherwise": "baseline"}),
         "S017 promotion gate changed")
-    _require(config["mlflow"].get("experiment_id") == "1"
-             and set(config["mlflow"].get("forbidden", [])) == {"raw_audio", "embeddings", "model_weights", "credentials"},
-             "S017 MLflow scope changed")
-    _require(config["retention"].get("local_transfer") == "promotion_only",
-             "S017 local retention policy changed")
+    _require(config["selection_policy"] == SELECTION_POLICY, "S017 selection policy changed")
+    _require(_json_exact(config["mlflow"], MLFLOW_POLICY), "S017 MLflow scope changed")
+    _require(_json_exact(config["retention"], RETENTION_POLICY), "S017 local retention policy changed")
+    _require(_json_exact(config["limitations"], LIMITATIONS), "S017 limitations changed")
 
 
 def validate(root: Path, config_path: Path) -> dict:
@@ -383,6 +438,52 @@ def _case_feature_matrix(case: dict, scope: str, feature_set: str) -> tuple[np.n
     return qmf_feature_view(values["features"], values["feature_names"], feature_set)
 
 
+def _baseline_feature_predictions(values: dict) -> np.ndarray:
+    guess = np.asarray(values["guess"], dtype=np.int64)
+    margin = np.asarray(values["margin"], dtype=np.float64)
+    valid = np.asarray(values["valid"])
+    _require(guess.shape == margin.shape == valid.shape and guess.ndim == 1
+             and valid.dtype == np.bool_ and np.isfinite(margin).all(),
+             "Malformed QMF baseline feature view")
+    return np.where(valid & (margin > 0), guess, 0).astype(np.int64)
+
+
+def _fit_meta_qmf_case(case: dict, feature_set: str) -> dict:
+    """Fit model and threshold without consulting the disjoint validation truth."""
+    fit, validation = case["fit"], case["validation"]
+    fit_x, names = _case_feature_matrix(case, "fit", feature_set)
+    validation_x, validation_names = _case_feature_matrix(case, "validation", feature_set)
+    _require(names == validation_names, "QMF fit/validation feature order changed")
+    fit_target = is_known_targets(fit["truth"], classes=447)
+    _require(np.array_equal(fit_target, np.asarray(fit["truth"]) != 0),
+             "QMF target must mark every known row known, including misranked known rows")
+    model = fit_qmf_logistic(fit_x, fit_target, fit["groups"], names,
+                             l2_penalty=DEFAULT_L2_PENALTY, scale_floor=DEFAULT_SCALE_FLOOR)
+    fit_logits = predict_qmf_logit(fit_x, model, feature_order=names)
+    threshold, curve = select_qmf_threshold(
+        fit_logits, np.asarray(fit["truth"], dtype=np.int64),
+        np.asarray(fit["guess"], dtype=np.int64), np.asarray(fit["valid"]),
+        _baseline_feature_predictions(fit), classes=447,
+    )
+    validation_logits = predict_qmf_logit(validation_x, model, feature_order=names)
+    validation_predictions = qmf_decisions(
+        validation["known_scores"], validation_logits, threshold["threshold"], validation["valid"]
+    )
+    return {
+        "model": model,
+        "feature_names": names,
+        "fit_logits": fit_logits,
+        "validation_logits": validation_logits,
+        "validation_predictions": validation_predictions,
+        "threshold": float(threshold["threshold"]),
+        "threshold_training_macro_f1_447": float(threshold["meta_macro_f1_447"]),
+        "threshold_training_changes_from_baseline": int(threshold["changed_from_baseline"]),
+        "threshold_curve_sha256": _sha_bytes(curve),
+        "threshold_curve_points": len(curve),
+        "threshold_fit_scope": "case_fit_only",
+    }
+
+
 def _fit_search(prepared: dict, baseline: dict, nested: dict, *, device: str) -> dict:
     query = np.asarray(nested["query_global_indices"], dtype=np.int64)
     _require(np.array_equal(query, prepared["scores_by_alpha"][0.0]["calibration_indices"]),
@@ -395,7 +496,9 @@ def _fit_search(prepared: dict, baseline: dict, nested: dict, *, device: str) ->
     assignments = np.full(count, -1, dtype=np.int64)
     baseline_predictions = np.empty(count, dtype=np.int64)
     logits = {name: np.full(count, np.nan) for name in FEATURE_SETS}
+    crossfit_predictions = {name: np.full(count, -1, dtype=np.int64) for name in FEATURE_SETS}
     meta_models = {name: [] for name in FEATURE_SETS}
+    fold_fits = {name: [] for name in FEATURE_SETS}
     for case in nested["cases"]:
         fit, validation = case["fit"], case["validation"]
         rows = np.asarray([lookup[int(index)] for index in validation["global_indices"]], dtype=np.int64)
@@ -403,27 +506,44 @@ def _fit_search(prepared: dict, baseline: dict, nested: dict, *, device: str) ->
                  "Nested validation truth/order changed")
         assignments[rows] = int(case["meta_fold"])
         guess[rows] = validation["guess"]
-        baseline_predictions[rows] = np.where(validation["margin"] > 0, validation["guess"], 0)
-        fit_target = is_known_targets(fit["truth"], classes=447)
-        _require(np.array_equal(fit_target, np.asarray(fit["truth"]) != 0),
-                 "QMF target must mark every known row known, including misranked known rows")
+        baseline_predictions[rows] = _baseline_feature_predictions(validation)
         for feature_set in FEATURE_SETS:
-            fit_x, names = _case_feature_matrix(case, "fit", feature_set)
-            validation_x, validation_names = _case_feature_matrix(case, "validation", feature_set)
-            _require(names == validation_names, "QMF fit/validation feature order changed")
-            model = fit_qmf_logistic(fit_x, fit_target, fit["groups"], names,
-                                     l2_penalty=DEFAULT_L2_PENALTY, scale_floor=DEFAULT_SCALE_FLOOR)
-            logits[feature_set][rows] = predict_qmf_logit(validation_x, model, feature_order=names)
-            meta_models[feature_set].append({"meta_fold": int(case["meta_fold"]), "model": model})
+            fitted = _fit_meta_qmf_case(case, feature_set)
+            logits[feature_set][rows] = fitted["validation_logits"]
+            crossfit_predictions[feature_set][rows] = fitted["validation_predictions"]
+            heldout = int(case["meta_fold"])
+            fit_record = {
+                "heldout_meta_fold": heldout,
+                "fit_meta_folds": [fold for fold in range(META_FOLDS) if fold != heldout],
+                "threshold": fitted["threshold"],
+                "fit_rows": len(fit["truth"]),
+                "validation_rows": len(validation["truth"]),
+                "threshold_fit_scope": fitted["threshold_fit_scope"],
+            }
+            fold_fits[feature_set].append(fit_record)
+            meta_models[feature_set].append({
+                "meta_fold": heldout,
+                "model": fitted["model"],
+                "threshold": fitted["threshold"],
+                "threshold_curve_sha256": fitted["threshold_curve_sha256"],
+                "threshold_curve_points": fitted["threshold_curve_points"],
+                "threshold_training_macro_f1_447": fitted["threshold_training_macro_f1_447"],
+                "threshold_training_changes_from_baseline": fitted["threshold_training_changes_from_baseline"],
+            })
     _require(np.all(assignments >= 0) and np.array_equal(assignments, nested["assignments"])
-             and all(np.isfinite(value).all() for value in logits.values()),
+             and all(np.isfinite(value).all() for value in logits.values())
+             and all(np.all(value >= 0) for value in crossfit_predictions.values()),
              "Nested QMF coverage is incomplete")
     selection = select_qmf_policy(truth, guess, valid, baseline_predictions, assignments, [
-        {"id": "qmf_scores", "feature_set": "scores_only", "known_logits": logits["scores_only"]},
-        {"id": "qmf_scores_quality", "feature_set": "scores_quality", "known_logits": logits["scores_quality"]},
+        {"id": "qmf_scores", "feature_set": "scores_only",
+         "crossfit_predictions": crossfit_predictions["scores_only"], "fold_fits": fold_fits["scores_only"]},
+        {"id": "qmf_scores_quality", "feature_set": "scores_quality",
+         "crossfit_predictions": crossfit_predictions["scores_quality"], "fold_fits": fold_fits["scores_quality"]},
     ], classes=447)
+    selected_recipe = selection["selected"]["id"]
     fit_features = decision_features(prepared, baseline, "inner", device=device)
     outer_features = decision_features(prepared, baseline, "outer", device=device)
+    full_inner_baseline = _baseline_feature_predictions(fit_features)
     final_models, results = {}, {"baseline": {**baseline, "model": None,
         "meta_selection": selection["candidates"][0]}}
     for feature_set, recipe in (("scores_only", "qmf_scores"), ("scores_quality", "qmf_scores_quality")):
@@ -435,29 +555,44 @@ def _fit_search(prepared: dict, baseline: dict, nested: dict, *, device: str) ->
             prepared["groups"][fit_features["indices"]], names,
             l2_penalty=DEFAULT_L2_PENALTY, scale_floor=DEFAULT_SCALE_FLOOR)
         candidate = next(row for row in selection["candidates"] if row["id"] == recipe)
+        full_inner_logits = predict_qmf_logit(fit_x, model, feature_order=names)
+        final_threshold, final_curve = select_qmf_threshold(
+            full_inner_logits, np.asarray(prepared["inner_truth"], dtype=np.int64),
+            np.asarray(fit_features["guess"], dtype=np.int64), np.asarray(fit_features["valid"]),
+            full_inner_baseline, classes=447,
+        )
+        threshold = float(final_threshold["threshold"])
         outer_logits = predict_qmf_logit(outer_x, model, feature_order=names)
         probabilities = qmf_probabilities(outer_features["known_scores"], outer_logits,
-            candidate["threshold"], outer_features["valid"], temperature=DEFAULT_TEMPERATURE)
+            threshold, outer_features["valid"], temperature=DEFAULT_TEMPERATURE)
         known_winner = outer_features["known_scores"].argmax(axis=1) + 1
         predicted = probabilities.argmax(axis=1)
         _require(np.all((predicted == 0) | (predicted == known_winner)), "QMF reordered a known identity")
+        bundle = {"model": model, "threshold": threshold,
+            "threshold_curve": final_curve,
+            "threshold_curve_sha256": _sha_bytes(final_curve), "threshold_curve_points": len(final_curve),
+            "threshold_fit_scope": "full_inner_same_model_logits_after_recipe_assessment",
+            "recipe_selection_frozen_before_refit": selected_recipe}
         policy = {"id": recipe, "kind": "qmf_open_set_logistic", "feature_set": feature_set,
-            "feature_names": names, "threshold": candidate["threshold"], "model_sha256": _sha_bytes(model),
+            "feature_names": names, "threshold": threshold, "model_sha256": _sha_bytes(model),
+            "model_bundle_sha256": _sha_bytes(bundle),
+            "threshold_curve_sha256": bundle["threshold_curve_sha256"],
             "target": "is_known", "identity_ranking": "unchanged_C002b_max_reference",
             "base_policy": baseline["policy"], "base_calibration": baseline["calibration"]}
-        results[recipe] = {"policy": policy, "calibration": {"threshold": candidate["threshold"],
-            "inner_macro_f1_447": candidate["meta_macro_f1_447"]}, "probabilities": probabilities,
+        results[recipe] = {"policy": policy, "calibration": {"threshold": threshold,
+            "full_inner_training_macro_f1_447": final_threshold["meta_macro_f1_447"],
+            "heldout_meta_macro_f1_447": candidate["meta_macro_f1_447"]}, "probabilities": probabilities,
             "scores": {**baseline["scores"], "outer_qmf_logit": outer_logits}, "model": model,
             "meta_selection": candidate}
-        final_models[feature_set] = model
-    selected = selection["selected"]["id"]
-    results["selector"] = deepcopy(results[selected])
+        final_models[feature_set] = bundle
+    results["selector"] = deepcopy(results[selected_recipe])
     results["selector"]["policy"] = {**results["selector"]["policy"], "id": "selector",
-        "selected_recipe": selected, "baseline_fallback": selection["baseline_fallback"]}
+        "selected_recipe": selected_recipe, "baseline_fallback": selection["baseline_fallback"]}
     return {"results": results, "selection": selection, "meta_models": meta_models,
             "final_models": final_models, "meta_logits": logits, "meta_truth": truth,
             "meta_guess": guess, "meta_baseline_predictions": baseline_predictions,
-            "assignments": assignments, "full_fit_features": fit_features, "outer_features": outer_features}
+            "meta_crossfit_predictions": crossfit_predictions, "assignments": assignments,
+            "full_fit_features": fit_features, "outer_features": outer_features}
 
 
 def _parity(prepared: dict, baseline: dict, search: dict) -> dict:
@@ -470,9 +605,13 @@ def _parity(prepared: dict, baseline: dict, search: dict) -> dict:
         cuda_x, names = qmf_feature_view(cuda["features"], cuda["feature_names"], feature_set)
         cpu_x, cpu_names = qmf_feature_view(cpu["features"], cpu["feature_names"], feature_set)
         _require(names == cpu_names, "CPU/CUDA QMF feature order changed")
-        model = search["final_models"][feature_set]
+        bundle = search["final_models"][feature_set]
+        model = bundle["model"]
         logits = predict_qmf_logit(cuda_x, model, feature_order=names)
-        threshold = search["results"][recipe]["policy"]["threshold"]
+        threshold = bundle["threshold"]
+        _require(threshold == search["results"][recipe]["policy"]["threshold"]
+                 and _sha_bytes(bundle) == search["results"][recipe]["policy"]["model_bundle_sha256"],
+                 "Sealed full QMF bundle changed before parity evaluation")
         probabilities = qmf_probabilities(cuda["known_scores"], logits, threshold, cuda["valid"])
         expected = _prediction_indices(search["results"][recipe])
         observed = probabilities.argmax(axis=1)
