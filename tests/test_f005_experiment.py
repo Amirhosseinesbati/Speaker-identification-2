@@ -15,6 +15,7 @@ from unittest import mock
 import numpy as np
 
 from speaker_id.training.f005_experiment import (
+    DefaultF005Backend,
     _extract_advanced_cache,
     _safe_add_artifact,
     execute_f005_experiment,
@@ -273,6 +274,60 @@ class F005ExperimentTests(unittest.TestCase):
 
     def tearDown(self):
         self.temporary.cleanup()
+
+    def test_default_backend_uses_fresh_receipts_and_live_environment(self):
+        readiness_signature = "1" * 64
+        readiness_input_hashes = {"manifest": "2" * 64}
+        advanced_weights_sha256 = "3" * 64
+        c002b_artifacts = {"experiment_report.json": "4" * 64}
+        source_verification = {
+            "advanced_dimension": 192,
+            "advanced_weights_sha256": advanced_weights_sha256,
+            "public_dimension": 512,
+            "public_endpoint_trainable": False,
+            "c002b_artifacts": c002b_artifacts,
+        }
+        contract = {
+            "readiness": {
+                "signature": readiness_signature,
+                "input_hashes": readiness_input_hashes,
+                "summary": {"audio_hashes_checked": True},
+                "config": {"expected_vast_instance_id": "50288952"},
+            },
+            "identity": {
+                "readiness_signature": readiness_signature,
+                "readiness_input_hashes": readiness_input_hashes,
+                "advanced_weights_sha256": advanced_weights_sha256,
+                "trainable_embedding_dimension": 192,
+                "frozen_public_embedding_dimension": 512,
+            },
+            "config": {
+                "device": "cuda", "cpu_threads": 4,
+                "source_c002b": {"artifacts": c002b_artifacts},
+            },
+            "source_verification": source_verification,
+        }
+        backend = DefaultF005Backend()
+        stale_validator = "speaker_id.infrastructure.readiness.validate_readiness_for_execution"
+        with mock.patch(stale_validator, side_effect=AssertionError("stale C002 report was read")), \
+                mock.patch.dict("os.environ", {"VAST_INSTANCE_ID": "50288952"}):
+            result = backend.require_environment(contract, self.temp_path)
+        self.assertEqual(result["readiness_status"], "fresh_contract_verified")
+        self.assertEqual(result["readiness_signature"], readiness_signature)
+        self.assertTrue(result["audio_hashes_checked"])
+        self.assertEqual(result["vast_instance_id"], "50288952")
+
+        bad_audio = json.loads(json.dumps(contract))
+        bad_audio["readiness"]["summary"]["audio_hashes_checked"] = False
+        with self.assertRaisesRegex(ValueError, "full-audio"):
+            backend.require_environment(bad_audio, self.temp_path)
+        bad_source = json.loads(json.dumps(contract))
+        bad_source["source_verification"] = None
+        with self.assertRaisesRegex(ValueError, "source verification"):
+            backend.require_environment(bad_source, self.temp_path)
+        with mock.patch.dict("os.environ", {"VAST_INSTANCE_ID": "wrong"}):
+            with self.assertRaisesRegex(RuntimeError, "instance marker"):
+                backend.require_environment(contract, self.temp_path)
 
     def test_full_orchestration_seals_both_folds_before_outer_and_limits_extraction(self):
         root, config, binding, contract = fake_project(self.temp_path)

@@ -380,19 +380,38 @@ class DefaultF005Backend:
         return execution_plan(contract, include_plan_hashes=True)
 
     def require_environment(self, contract: dict, root: Path) -> dict:
-        from speaker_id.infrastructure.readiness import validate_readiness_for_execution
         from speaker_id.training.f005_contract import require_execution_environment
         readiness = contract["readiness"]
         _require(
             readiness.get("summary", {}).get("audio_hashes_checked") is True,
             "F005 full execution requires a fresh full-audio hash verification",
         )
-        report = validate_readiness_for_execution(
-            Path(root), readiness,
-            Path("artifacts/infrastructure/C002_preparation/readiness.json"),
+        identity = contract["identity"]
+        _require(
+            readiness.get("signature") == identity.get("readiness_signature")
+            and readiness.get("input_hashes") == identity.get("readiness_input_hashes"),
+            "F005 readiness receipt differs from its fresh contract identity",
+        )
+        source_verification = contract.get("source_verification")
+        expected_source_verification = {
+            "advanced_dimension": identity["trainable_embedding_dimension"],
+            "advanced_weights_sha256": identity["advanced_weights_sha256"],
+            "public_dimension": identity["frozen_public_embedding_dimension"],
+            "public_endpoint_trainable": False,
+            "c002b_artifacts": contract["config"]["source_c002b"]["artifacts"],
+        }
+        _require(
+            source_verification == expected_source_verification,
+            "F005 source verification receipt differs from its pinned sources",
         )
         environment = require_execution_environment(contract)
-        return {"readiness_status": report["status"], **environment}
+        return {
+            "readiness_status": "fresh_contract_verified",
+            "readiness_signature": readiness["signature"],
+            "audio_hashes_checked": True,
+            "source_verification_sha256": _sha(source_verification),
+            **environment,
+        }
 
     def load_frozen_sources(self, contract: dict) -> dict:
         from speaker_id.training.gain_suite import verify_gain_cache
