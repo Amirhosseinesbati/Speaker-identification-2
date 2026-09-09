@@ -26,6 +26,7 @@ from speaker_id.models.campp import file_sha256
 
 
 ANALYSIS_VERSION = 1
+PRETRUTH_SCHEMA = "f005-server-only-pretruth-cache-v1"
 F005_COMPARATORS = ("frozen_same_protocol", "fresh_control", "selected_arm")
 PAIR_COMPARISONS = (
     ("c002b_to_frozen_same_protocol", "c002b", "frozen_same_protocol"),
@@ -37,6 +38,12 @@ PAIR_COMPARISONS = (
 def _sha256(path: Path) -> str:
     with Path(path).open("rb") as handle:
         return hashlib.file_digest(handle, "sha256").hexdigest()
+
+
+def _canonical_sha(value: object) -> str:
+    payload = json.dumps(value, ensure_ascii=False, allow_nan=False, sort_keys=True,
+                         separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def _read_json(path: Path) -> dict:
@@ -302,7 +309,9 @@ def _load_selected_ranks(f005_dir: Path, outer: int, selected_arm: str,
     if not metadata_path.is_file() or not arrays_path.is_file():
         raise ValueError("F005 selected pretruth bundle is incomplete")
     metadata = _read_json(metadata_path)
-    if metadata.get("schema_version") != 1 or metadata.get("arrays_file_sha256") != _sha256(arrays_path):
+    if (metadata.get("schema_version") != PRETRUTH_SCHEMA
+            or metadata.get("arrays_file_sha256") != _sha256(arrays_path)
+            or metadata.get("structure_sha256") != _canonical_sha(metadata.get("structure"))):
         raise ValueError("F005 selected pretruth bundle hash differs")
     structure = metadata.get("structure")
     if (not isinstance(structure, dict) or structure.get("outer_fold") != outer
@@ -318,6 +327,8 @@ def _load_selected_ranks(f005_dir: Path, outer: int, selected_arm: str,
         raise ValueError("F005 selected pretruth label order differs from fixed labels")
     with np.load(arrays_path, allow_pickle=False) as saved:
         arrays = {key: saved[key].copy() for key in saved.files}
+    if set(arrays) != set(metadata.get("array_keys", [])):
+        raise ValueError("F005 selected pretruth array inventory differs from metadata")
     scores = _array_from_descriptor(bundle.get("outer_known_scores"), arrays)
     valid = _array_from_descriptor(bundle.get("outer_valid"), arrays)
     if (scores.shape != (len(expected_files), len(labels) - 1) or scores.dtype != np.float32
