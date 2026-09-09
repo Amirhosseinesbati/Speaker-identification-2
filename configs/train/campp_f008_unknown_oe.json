@@ -1,0 +1,120 @@
+{
+  "schema_version": 1,
+  "experiment_code": "F008",
+  "run_name": "F008-campp-advanced-open-set-outlier-exposure",
+  "hypothesis": "The dominant remaining correctable error is unknown-to-known false acceptance. Starting each fold from an authenticated F005 shared head, retain the known-only dual-AAM objective and add identity-agnostic outlier exposure only for group-disjoint unknown encoder-fit rows. Unknown rows must be pushed away from the 446 known AAM weight vectors without being assigned a shared artificial speaker identity.",
+  "source_f005": {
+    "run_dir": "/workspace/Speaker-identification-2-c002/artifacts/training/f005_consistency/F005_supervised_primary",
+    "parent_run_id": "5ad78a9dba1f4ab4a32783e445d91681",
+    "config_path": "configs/train/campp_f005_consistency.json",
+    "config_sha256": "2e1f83b01054d8eb7fd9c552cba3ff26c8852794de8dcee1d2820e4441221a0d",
+    "required_selected_arm_by_outer_fold": {"0": "control", "1": "control"},
+    "reuse_shared_head": true,
+    "reuse_control_tail_as_comparator_only": true
+  },
+  "readiness_config": "configs/train/campp_coverage_c002.json",
+  "advanced_model_config": "configs/model/campp_advanced.json",
+  "output_root": "artifacts/training/f008_unknown_oe",
+  "seed": 20260909,
+  "fold_ids": [0, 1],
+  "expected_source_files": 4529,
+  "known_classes": 446,
+  "evaluation_classes": 447,
+  "expected_role_counts": {
+    "0": {"known_fit_rows": 662, "known_fit_groups": 662, "unknown_fit_rows": 555, "unknown_fit_groups": 555, "known_calibration_rows": 443, "unknown_calibration_rows": 556},
+    "1": {"known_fit_rows": 667, "known_fit_groups": 667, "unknown_fit_rows": 556, "unknown_fit_groups": 556, "known_calibration_rows": 445, "unknown_calibration_rows": 556}
+  },
+  "device": "cuda",
+  "cpu_threads": 4,
+  "execution": {
+    "gpu_name_contains": "RTX 3090",
+    "tensor_dtype": "float32",
+    "no_cpu_fallback": true,
+    "deterministic_algorithms": "enforce_error",
+    "cublas_workspace_config": ":4096:8",
+    "thread_environment": {
+      "OPENBLAS_NUM_THREADS": "4",
+      "OMP_NUM_THREADS": "4",
+      "MKL_NUM_THREADS": "4"
+    }
+  },
+  "training": {
+    "source": "authenticated_f005_shared_head_before_tail",
+    "known_plan": "exact_f005_tail_known_speaker_file_and_nested_crop_plan",
+    "known_objective": "mean_short_long_aam",
+    "tail_steps": 500,
+    "known_batch_pairs": 32,
+    "unknown_batch_pairs": 32,
+    "microbatch_pairs": 4,
+    "unknown_sampling": "step_counter_seeded_uniform_permitted_unknown_file_with_paired_nested_crops_v1",
+    "unknown_scope": "unknown_encoder_fit_allowed_only_group_disjoint_from_calibration_and_outer",
+    "freeze_batchnorm": true,
+    "gradient_clip_norm": 5.0,
+    "checkpoint_every_steps": 100,
+    "checkpoint_scope": "server_only_until_promotion",
+    "mixed_precision": false
+  },
+  "energy_margin": {
+    "formula": "0.5_times_mean_softplus((E_known-maximum_known_energy)/softplus_temperature)_plus_0.5_times_mean_softplus((minimum_unknown_energy-E_unknown)/softplus_temperature)",
+    "energy_definition": "negative_temperature_logsumexp_of_pre_margin_unscaled_cosine_logits",
+    "energy_temperature": 0.05,
+    "softplus_temperature": 0.05,
+    "known_maximum_quantile": 0.95,
+    "declared_minimum_energy_gap": 0.02,
+    "unknown_source_distribution": "diagnostic_only; the unknown lower margin is the fitted known_upper_quantile plus the declared positive gap",
+    "margin_fit_scope": "all_permitted_known_and_unknown_encoder_fit_rows_with_authenticated_f005_shared_head_only",
+    "margin_values_sealed_before_tail_training": true,
+    "known_energy_weight": 1.0,
+    "unknown_energy_weight": 1.0
+  },
+  "arms": [
+    {"id": "control_f005", "kind": "reused_f005_dual_aam_control", "lambda": 0.0},
+    {"id": "energy_005", "kind": "energy_margin_outlier_exposure", "lambda": 0.05},
+    {"id": "uniform_005", "kind": "uniform_outlier_exposure", "lambda": 0.05}
+  ],
+  "selection": {
+    "calibration_scope": "original_group_disjoint_known_and_unknown_calibration_query_rows_only",
+    "primary_metric": "macro_f1_447",
+    "known_preservation_metric": "known_query_macro_f1_over_observed_labels",
+    "maximum_known_preservation_decline_vs_control": 0.001,
+    "tie_order": ["control_f005", "energy_005", "uniform_005"],
+    "outer_labels_forbidden_until_all_arm_policies_sealed": true,
+    "refit_after_selection": false
+  },
+  "scoring": {
+    "protocol": "c002b_family_disjoint_roles_v1",
+    "reference_method": "max_reference",
+    "fusion": "same_reference_sqrt_weighted_encoder_concatenation",
+    "alphas": [0.0, 0.25, 0.5, 0.75, 1.0],
+    "alpha_tie_order": [0.0, 1.0, 0.25, 0.5, 0.75],
+    "unknown_weights": [0.0, 0.25, 0.5, 0.75, 1.0],
+    "margin_weights": [0.0, 0.5],
+    "threshold_candidates": 201,
+    "probability_temperature": 0.05,
+    "historical_c002b_fixed_policy": "diagnostic_only_never_selectable"
+  },
+  "promotion": {
+    "goal_target_oof_macro_f1": 0.965,
+    "minimum_selected_delta_vs_reused_control": 0.003,
+    "minimum_selected_delta_vs_c002b": 0.003,
+    "minimum_accuracy_delta_vs_c002b": 0.0,
+    "minimum_short_known_top1_delta_vs_c002b": 0.0,
+    "minimum_each_fold_delta_vs_reused_control": -0.001,
+    "minimum_each_fold_delta_vs_c002b": -0.001,
+    "maximum_unknown_to_known_increase_vs_c002b": 2,
+    "maximum_known_to_other_known_increase_vs_c002b": 0,
+    "minimum_group_bootstrap_lower_bound_vs_reused_control": -0.0005,
+    "minimum_group_bootstrap_lower_bound_vs_c002b": -0.0005,
+    "require_exact_cpu_cuda_prediction_parity": true,
+    "all_conditions_required": true,
+    "otherwise": "retain_c002b"
+  },
+  "mlflow": {
+    "experiment_id": "1",
+    "upload": "resolved_config_source_snapshot_receipts_seals_metrics_reports_only_no_audio_embeddings_weights_optimizer_or_credentials"
+  },
+  "retention": {
+    "local_transfer": "promotion_only",
+    "server_only": ["embedding_caches", "intermediate_checkpoints", "optimizer_states", "failed_arms", "run_directory"]
+  }
+}
