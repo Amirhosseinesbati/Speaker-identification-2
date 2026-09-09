@@ -174,6 +174,7 @@ def main() -> None:
     from speaker_id.training.f008_e0_evaluation import (
         e0_active_scoring_spec,
         evaluate_rebuilt_e0_outer,
+        mlflow_safe_outer_report,
         prepared_e0_metadata,
         rebuild_e0_pretruth_bundles,
         validate_completed_e0_screen,
@@ -301,9 +302,16 @@ def main() -> None:
             prepared=prepared, output_directory=output,
         )
         report_path = output / "outer_evaluation_report.json"
-        _safe_add_metadata_artifact(tracker, report_path, "outer_evaluation_report.json")
+        # Keep the complete class-level report server-only.  Only the
+        # redacted aggregate report is uploaded to the external tracker.
+        mlflow_report = mlflow_safe_outer_report(report)
+        mlflow_report_path = output / "outer_evaluation_report_mlflow_safe.json"
+        _write_json(mlflow_report_path, mlflow_report)
+        _safe_add_metadata_artifact(
+            tracker, mlflow_report_path, "outer_evaluation_report.json"
+        )
         _log_metrics(tracker, report)
-        tracker.write_report(report, markdown=_compact_for_markdown(report))
+        tracker.write_report(mlflow_report, markdown=_compact_for_markdown(mlflow_report))
         tracker.flush(strict=True)
         tracker.verify_artifacts()
         tracker.finish("FINISHED", strict=True)

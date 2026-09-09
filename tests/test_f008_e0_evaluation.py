@@ -498,5 +498,26 @@ class F008E0OuterEvaluationTests(unittest.TestCase):
                 e0._validate_recovery_fold0_reuse(**changed)
 
 
+    def test_mlflow_safe_report_removes_private_class_labels(self) -> None:
+        report = {
+            "metrics": {"control_f005": {"macro_f1": 0.9}},
+            "deltas": {"macro_f1_energy_minus_control": 0.01},
+            "class_f1_deltas_energy_minus_control": [
+                {"speaker_id": "private-speaker", "f1_delta_energy_minus_control": 0.2}
+            ],
+        }
+        safe = e0.mlflow_safe_outer_report(report)
+        self.assertEqual(safe["metrics"], report["metrics"])
+        self.assertEqual(safe["deltas"], report["deltas"])
+        self.assertEqual(
+            safe["class_f1_deltas_energy_minus_control"],
+            {"server_only": True, "class_count": 1, "speaker_ids_uploaded": False},
+        )
+        self.assertFalse(safe["outer_truth_labels_uploaded"])
+        self.assertFalse(safe["per_file_predictions_uploaded"])
+        self.assertEqual(report["class_f1_deltas_energy_minus_control"][0]["speaker_id"],
+                         "private-speaker")
+
+
 if __name__ == "__main__":
     unittest.main()

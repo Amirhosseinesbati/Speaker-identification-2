@@ -648,6 +648,27 @@ def _compact_metrics(metrics: Mapping[str, object]) -> dict[str, object]:
     return {key: value for key, value in metrics.items() if key != "per_class"}
 
 
+def mlflow_safe_outer_report(report: Mapping[str, object]) -> dict[str, object]:
+    """Remove private outer-label detail before an external MLflow upload.
+
+    The complete report remains server-only for local audit.  MLflow receives
+    aggregate metrics and directional errors, while class-level rows that
+    contain speaker labels are summarized without their identifiers.
+    """
+    _require(isinstance(report, Mapping), "F008 E0 outer report must be an object")
+    safe = dict(report)
+    class_rows = safe.pop("class_f1_deltas_energy_minus_control", None)
+    if isinstance(class_rows, list):
+        safe["class_f1_deltas_energy_minus_control"] = {
+            "server_only": True,
+            "class_count": len(class_rows),
+            "speaker_ids_uploaded": False,
+        }
+    safe["outer_truth_labels_uploaded"] = False
+    safe["per_file_predictions_uploaded"] = False
+    return safe
+
+
 def _index_predictions(rows: object, *, expected: set[str], labels: set[str], name: str) -> dict[str, str]:
     _require(isinstance(rows, list), f"F008 E0 {name} predictions must be a list")
     indexed: dict[str, str] = {}
