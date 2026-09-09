@@ -36,7 +36,7 @@ class Groups:
 
 def construct_folds(
     rows: list[dict], verified_pairs: list[tuple[str, str]], requested_folds: int = 5,
-    seed: int = 20260907,
+    seed: int = 20260907, *, require_validation_known_coverage: bool = True,
 ) -> tuple[list[dict], dict]:
     if requested_folds < 2:
         raise ValueError("At least two validation folds are required")
@@ -73,7 +73,17 @@ def construct_folds(
         for label in {r["speaker_id"] for r in group["eligible"]}:
             support[label] += 1
     minimum = min((support[label] for label in known), default=0)
-    n_folds = min(requested_folds, minimum)
+    # The original two-way protocol requires every known class in every
+    # validation fold, so a rare class limits the fold count.  A separate
+    # capacity protocol may keep all known classes in training while allowing
+    # a rare class to be absent from an individual validation fold.  It must
+    # still have at least two eligible groups so training and validation never
+    # share its only group.
+    n_folds = (
+        min(requested_folds, minimum)
+        if require_validation_known_coverage
+        else (requested_folds if minimum >= 2 else minimum)
+    )
     base_summary = {
         "status": "provisional_content_group_folds" if n_folds >= 2 else "infeasible",
         "requested_folds": requested_folds, "actual_folds": n_folds if n_folds >= 2 else 0,
@@ -156,7 +166,7 @@ def construct_folds(
         val_labels = {r["speaker_id"] for r in evaluation}
         missing_train = sorted(set(known) - train_labels)
         missing_val = sorted(set(known) - val_labels)
-        if missing_train or missing_val:
+        if missing_train or (require_validation_known_coverage and missing_val):
             raise AssertionError("Fold assignment failed known-label coverage")
         fold_summary.append({"fold": fold, "validation_files": len(evaluation),
                              "training_eligible_files": len(training),
@@ -171,10 +181,14 @@ def construct_folds(
 
 
 def write_splits(manifest: Path, verified_pairs: list[tuple[str, str]], output_dir: Path,
-                 summary_path: Path, requested_folds: int = 5, seed: int = 20260907) -> dict:
+                 summary_path: Path, requested_folds: int = 5, seed: int = 20260907,
+                 *, require_validation_known_coverage: bool = True) -> dict:
     with manifest.open(encoding="utf-8", newline="") as stream:
         rows = list(csv.DictReader(stream))
-    folds, summary = construct_folds(rows, verified_pairs, requested_folds, seed)
+    folds, summary = construct_folds(
+        rows, verified_pairs, requested_folds, seed,
+        require_validation_known_coverage=require_validation_known_coverage,
+    )
     summary["manifest_sha256"] = hashlib.sha256(manifest.read_bytes()).hexdigest()
     output_dir.mkdir(parents=True, exist_ok=True)
     summary_path.parent.mkdir(parents=True, exist_ok=True)

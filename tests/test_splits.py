@@ -44,6 +44,19 @@ class SplitTests(unittest.TestCase):
         self.assertEqual(summary["status"], "infeasible")
         self.assertEqual(summary["unsupported_known_classes"], ["bob"])
 
+    def test_capacity_protocol_can_use_five_folds_with_sparse_validation(self):
+        rows = [r for r in self.samples() if r["speaker_id"] != "bob" or int(r["audio_file"].rsplit("-", 1)[1]) < 2]
+        folds, summary = construct_folds(
+            rows, [], requested_folds=5, require_validation_known_coverage=False,
+        )
+        self.assertEqual(summary["actual_folds"], 5)
+        self.assertEqual(len(folds), len(rows))
+        self.assertTrue(all(fold["training_known_classes"] == 2 for fold in summary["folds"]))
+        self.assertTrue(any(fold["validation_known_classes"] < 2 for fold in summary["folds"]))
+        default_folds, default_summary = construct_folds(rows, [], requested_folds=5)
+        self.assertEqual(len(default_folds), len(rows))
+        self.assertEqual(default_summary["actual_folds"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()
