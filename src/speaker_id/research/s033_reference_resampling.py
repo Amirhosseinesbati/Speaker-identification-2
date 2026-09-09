@@ -348,7 +348,10 @@ def group_disjoint_frozen_winner_stability(
     sampled = np.asarray(galleries.indices)
     reference_tensor = torch.as_tensor(references.astype(np.float32, copy=False), device=device)
     gallery_tensor = reference_tensor[
-        torch.as_tensor(sampled.reshape(-1), dtype=torch.long, device=device)
+        # ``ResampledGalleries`` makes its evidence immutable.  Torch warns
+        # when handed a read-only NumPy view even though indexing itself does
+        # not mutate it, so make the small integer index buffer writable.
+        torch.as_tensor(np.array(sampled.reshape(-1), copy=True), dtype=torch.long, device=device)
     ].reshape((*sampled.shape, references.shape[1]))
     class_tensor = torch.as_tensor(class_labels, dtype=torch.long, device=device)
     stability = np.zeros(len(queries), dtype=np.float64)
