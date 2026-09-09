@@ -374,7 +374,7 @@ def _pair_summary(rows: list[dict], before: str, after: str, metrics: dict[str, 
 def _rank_summary(rows: list[dict]) -> dict:
     eligible = [row for row in rows if row["speaker_id"] != "unknown" and row["has_nonzero_signal"]]
     c002b_rank1 = sum(row["c002b_known_rank"] == 1 for row in eligible)
-    selected_top1 = sum(row["f005_selected_known_top1"] == row["speaker_id"] for row in eligible)
+    selected_top1 = sum(row["selected_arm_known_top1"] == row["speaker_id"] for row in eligible)
     selected_rank_available = all(row["f005_selected_known_rank"] is not None for row in eligible)
     result = {
         "nonzero_known_files": len(eligible),

@@ -126,14 +126,10 @@ class F005PairedAnalysisTests(unittest.TestCase):
         _write_csv(self.c002b_dir / "oof_predictions.csv", predictions)
 
     def _write_f005(self) -> None:
-        manifest_by_name = {
-            row["audio_file"]: row
-            for row in csv.DictReader(self.manifest_path.open(encoding="utf-8", newline=""))
-        }
-        folds_by_name = {
-            row["audio_file"]: row
-            for row in csv.DictReader(self.folds_path.open(encoding="utf-8", newline=""))
-        }
+        with self.manifest_path.open(encoding="utf-8", newline="") as stream:
+            manifest_by_name = {row["audio_file"]: row for row in csv.DictReader(stream)}
+        with self.folds_path.open(encoding="utf-8", newline="") as stream:
+            folds_by_name = {row["audio_file"]: row for row in csv.DictReader(stream)}
         historical, selected = [], []
         for outer in (0, 1):
             items = [row for row in self.specs if row[1] == outer]
