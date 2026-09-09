@@ -219,8 +219,13 @@ def fit_encoder(encoder, roles: list[dict], labels: list[str], root: Path,
         if (step + 1) % fit["checkpoint_every_steps"] == 0 or step + 1 == total_steps:
             save(step + 1)
     encoder.eval()
-    tracker.add_artifact(checkpoint, "checkpoints/last.pt")
-    tracker.add_artifact(history_path, "training/fit_history.jsonl")
+    # Model and optimizer artifacts are server-only for controlled research
+    # runs.  Historical recipes keep the legacy default for compatibility;
+    # newer configs explicitly set this retention gate to false.
+    retention = config.get("retention", {})
+    if retention.get("mlflow_upload_model_artifacts", True):
+        tracker.add_artifact(checkpoint, "checkpoints/last.pt")
+        tracker.add_artifact(history_path, "training/fit_history.jsonl")
     adaptation_report = ({"adaptation_schedule": dict(adaptation),
                           "schedule_state": adaptation_checkpoint_state(fit, total_steps),
                           "final_update_settings": adaptation_step(fit, total_steps - 1),
